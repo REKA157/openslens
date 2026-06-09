@@ -49,14 +49,21 @@ async def handle_waha_event(payload: dict[str, Any]) -> dict:
 
     # 2. Filtre type d'événement
     if event not in MESSAGE_EVENTS:
-        logger.debug("Ignored non-message event: %s", event)
+        logger.info("[ignored] non-message event: %s", event)
         return {"status": "ignored", "reason": f"event {event} not handled"}
 
     # 3. Filtre groupe pilote
     chat_id = _extract_chat_id(data)
-    if chat_id != settings.pilot_group_id:
-        logger.debug("Ignored message from non-pilot chat: %s", chat_id)
+    expected = settings.pilot_group_id
+    if chat_id != expected:
+        logger.info(
+            "[ignored] chat_id mismatch: got=%r (len=%s), expected=%r (len=%s)",
+            chat_id, len(chat_id) if chat_id else None,
+            expected, len(expected) if expected else None,
+        )
         return {"status": "ignored", "reason": "chat not in pilot scope"}
+
+    logger.info("[accepted] chat_id matches pilot group, processing message")
 
     # 4. Normalise + upsert message
     msg_row = _normalize_message(data)
