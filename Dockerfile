@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v4: add diagnostic logging on ignored messages
+# v5: fix chat_id extraction for fromMe=true messages (use _data.id.remote)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -109,14 +109,39 @@ def _data_section(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_chat_id(data: dict[str, Any]) -> str | None:
-    """ID du chat (groupe ou DM)."""
-    chat_id = data.get("from")
+    """
+    ID du chat (groupe ou DM), peu importe la direction du message.
+
+    Source la plus fiable : `_data.id.remote` qui pointe TOUJOURS vers le chat
+    (que le message soit reçu OU envoyé par nous).
+
+    Pour les messages reçus : payload.from = chat (group_id ou contact)
+    Pour les messages envoyés (fromMe=true) : payload.from = nous, payload.to = chat
+    """
+    # 1. Source principale : _data.id.remote (toujours le chat)
+    inner = _data_section(data)
+    inner_id = inner.get("id") or {}
+    if isinstance(inner_id, dict):
+        remote = inner_id.get("remote")
+        if isinstance(remote, str):
+            return remote
+        if isinstance(remote, dict):
+            serialized = remote.get("_serialized")
+            if isinstance(serialized, str):
+                return serialized
+
+    # 2. Fallback : selon la direction
+    if data.get("fromMe") is True:
+        chat_id = data.get("to")
+    else:
+        chat_id = data.get("from")
     if isinstance(chat_id, str):
         return chat_id
     if isinstance(chat_id, dict):
         return chat_id.get("_serialized")
-    # Fallback id.remote
-    msg_id = data.get("id") or {}
+
+    # 3. Dernier recours : top-level id.remote
+    msg_id = data.get("id")
     if isinstance(msg_id, dict):
         remote = msg_id.get("remote")
         if isinstance(remote, str):
