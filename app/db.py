@@ -95,6 +95,16 @@ class _RestQuery:
         self._params[column] = f"neq.{value}"
         return self
 
+    def in_(self, column: str, values: list[Any]) -> "_RestQuery":
+        """PostgREST IN filter : ?column=in.(val1,val2,val3)"""
+        if not values:
+            # Filtre impossible côté SQL — on garde un filtre qui matche rien
+            self._params[column] = "eq.__never_matches__"
+            return self
+        serialized = ",".join(str(v) for v in values)
+        self._params[column] = f"in.({serialized})"
+        return self
+
     def limit(self, n: int) -> "_RestQuery":
         self._params["limit"] = str(n)
         return self

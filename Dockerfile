@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v11: add /api/dashboard endpoint + CORS for frontend stats
+# v13: add in_() method to REST client (used by /api/dashboard)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

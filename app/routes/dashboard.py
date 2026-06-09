@@ -43,10 +43,20 @@ async def dashboard() -> dict[str, Any]:
     msg_rows = messages.data or []
 
     # On garde uniquement les 7 derniers jours
-    recent_msgs = [
-        m for m in msg_rows
-        if datetime.fromisoformat(m["sent_at"].replace("Z", "+00:00")) >= week_start
-    ]
+    def _parse_dt(s: str | None) -> datetime | None:
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    recent_msgs = []
+    for m in msg_rows:
+        ts = _parse_dt(m.get("sent_at"))
+        if ts and ts >= week_start:
+            m["_parsed_ts"] = ts
+            recent_msgs.append(m)
 
     # 2. Classifications de tous ces messages
     msg_ids = [m["id"] for m in recent_msgs]
@@ -67,7 +77,9 @@ async def dashboard() -> dict[str, Any]:
 
     # 3. KPIs
     def in_window(start: datetime, end: datetime, msg: dict) -> bool:
-        ts = datetime.fromisoformat(msg["sent_at"].replace("Z", "+00:00"))
+        ts = msg.get("_parsed_ts")
+        if ts is None:
+            return False
         return start <= ts < end
 
     today_msgs = [m for m in recent_msgs if in_window(today_start, now, m)]
@@ -179,6 +191,10 @@ async def dashboard() -> dict[str, Any]:
             }
         )
     urgent_items = sorted(urgent_items, key=lambda x: x["sent_at"], reverse=True)[:20]
+
+    # Nettoyage : on retire le champ technique _parsed_ts avant le retour
+    for m in recent_msgs:
+        m.pop("_parsed_ts", None)
 
     return {
         "generated_at": now.isoformat(),
