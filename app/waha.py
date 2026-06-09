@@ -4,11 +4,27 @@ On l'utilise pour :
   - lire l'historique d'un groupe (backfill)
   - télécharger les médias (audio, image, document)
   - interroger l'état de session
+
+Particularité : les URLs de médias dans les payloads webhook WEBJS sont
+souvent du type `http://localhost:3000/api/files/...`. Le `localhost` ici
+est interne au conteneur WAHA, pas joignable depuis le backend. On en
+extrait toujours le path et on l'appelle via notre base_url public + clé API.
 """
+
+from urllib.parse import urlparse
 
 import httpx
 
 from app.config import settings
+
+
+def _strip_to_path(url: str) -> str:
+    """Garde uniquement path + query d'une URL absolue (sert à neutraliser le localhost)."""
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    return path
 
 
 class WahaClient:
@@ -17,7 +33,7 @@ class WahaClient:
         base_url: str | None = None,
         api_key: str | None = None,
         session_name: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ):
         self.base_url = (base_url or settings.waha_base_url).rstrip("/")
         self.api_key = api_key or settings.waha_api_key
@@ -26,6 +42,7 @@ class WahaClient:
             base_url=self.base_url,
             headers={"X-Api-Key": self.api_key},
             timeout=timeout,
+            follow_redirects=True,
         )
 
     async def aclose(self) -> None:
@@ -47,7 +64,6 @@ class WahaClient:
         limit: int = 100,
         download_media: bool = False,
     ) -> list[dict]:
-        """Récupère l'historique d'un chat (jusqu'à ~30j en NOWEB)."""
         params = {"limit": limit, "downloadMedia": str(download_media).lower()}
         r = await self._client.get(
             f"/api/{self.session_name}/chats/{chat_id}/messages",
@@ -56,24 +72,24 @@ class WahaClient:
         r.raise_for_status()
         return r.json()
 
-    async def download_media(self, message_id: str) -> tuple[bytes, str]:
+    async def download_url(self, url: str) -> tuple[bytes, str]:
         """
-        Télécharge le binaire d'un média via WAHA.
-        Retourne (content, content_type).
+        Télécharge un média depuis une URL fournie par le payload webhook.
+        On normalise l'URL en path pur pour passer par notre base_url public
+        (les URLs webhook contiennent souvent `localhost:3000` qui n'est pas
+        joignable depuis l'extérieur du conteneur WAHA).
         """
-        # WAHA expose les médias via /api/files/{file_id} ou directement
-        # via une URL signée dans le payload. On essaie l'endpoint standard.
-        r = await self._client.get(f"/api/{self.session_name}/messages/{message_id}/media")
+        path = _strip_to_path(url)
+        r = await self._client.get(path)
         r.raise_for_status()
         content_type = r.headers.get("content-type", "application/octet-stream")
         return r.content, content_type
 
-    async def download_url(self, url: str) -> tuple[bytes, str]:
-        """Télécharge un média depuis une URL fournie dans le payload webhook."""
-        # Si l'URL est un chemin relatif WAHA, on préfixe
-        if url.startswith("/"):
-            r = await self._client.get(url)
-        else:
-            r = await self._client.get(url)
+    async def download_media(self, message_id: str) -> tuple[bytes, str]:
+        """Fallback : tente de récupérer le média par l'endpoint message id."""
+        r = await self._client.get(
+            f"/api/{self.session_name}/messages/{message_id}/media"
+        )
         r.raise_for_status()
-        return r.content, r.headers.get("content-type", "application/octet-stream")
+        content_type = r.headers.get("content-type", "application/octet-stream")
+        return r.content, content_type

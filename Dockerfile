@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
-# Avoid Python writing .pyc files and buffer stdout/stderr
+# Build marker — bump to invalidate Coolify cache
+# v3: fix WEBJS payload parsing + media download URL rewriting
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

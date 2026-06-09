@@ -19,15 +19,18 @@ logger = logging.getLogger(__name__)
 BUCKET = "Media"
 
 
+def _resolve_type(payload: dict[str, Any]) -> str:
+    """Le type WAHA est dans payload._data.type pour WEBJS."""
+    inner = payload.get("_data") or {}
+    t = (inner.get("type") or payload.get("type") or "").lower()
+    return t or "document"
+
+
 async def download_and_store(
     message_uuid: str,
     waha_message_id: str,
     payload: dict[str, Any],
 ) -> None:
-    """
-    Télécharge le média associé au message et le pousse dans Supabase Storage,
-    puis met à jour la ligne whatsapp_media (status=stored, storage_path).
-    """
     sb = get_supabase()
     waha = WahaClient()
 
@@ -41,16 +44,19 @@ async def download_and_store(
         else:
             content, content_type = await waha.download_media(waha_message_id)
 
-        # 2. Construction du chemin Storage
-        media_type = (payload.get("type") or "document").lower()
-        if media_type in {"ptt", "voice"}:
+        # 2. Choix du dossier
+        data_type = _resolve_type(payload)
+        if data_type in {"ptt", "voice"}:
             folder = "audio"
-        elif media_type in {"image", "audio", "video", "document", "sticker"}:
-            folder = media_type
+        elif data_type in {"image", "audio", "video", "document", "sticker"}:
+            folder = data_type
         else:
             folder = "other"
 
-        ext = _guess_extension(media.get("filename"), content_type)
+        ext = _guess_extension(
+            media.get("filename") or (payload.get("_data") or {}).get("filename"),
+            content_type,
+        )
         date_prefix = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         storage_path = f"raw/{folder}/{date_prefix}/{message_uuid}{ext}"
 
@@ -86,7 +92,6 @@ async def download_and_store(
 
 
 def _guess_extension(filename: str | None, content_type: str) -> str:
-    """Devine l'extension du fichier, ex: '.jpg', '.ogg', '.pdf'."""
     if filename and "." in filename:
         return "." + filename.rsplit(".", 1)[-1].lower()
     ext = mimetypes.guess_extension(content_type or "")
