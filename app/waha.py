@@ -38,11 +38,15 @@ class WahaClient:
         self.base_url = (base_url or settings.waha_base_url).rstrip("/")
         self.api_key = api_key or settings.waha_api_key
         self.session_name = session_name or settings.waha_session_name
+        # verify=False : Caddy peut servir un cert self-signed sur sslip.io quand
+        # Let's Encrypt rate-limite. WAHA tourne sur notre VPS, l'auth est faite
+        # par X-Api-Key, donc on tolère.
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"X-Api-Key": self.api_key},
             timeout=timeout,
             follow_redirects=True,
+            verify=False,
         )
 
     async def aclose(self) -> None:
