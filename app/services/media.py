@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db import get_supabase
+from app.services.ai import vision as vision_service
 from app.waha import WahaClient
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ async def download_and_store(
         )
 
         # 4. Update whatsapp_media
-        sb.table("whatsapp_media").update(
+        updated = sb.table("whatsapp_media").update(
             {
                 "storage_path": storage_path,
                 "status": "stored",
@@ -80,6 +81,18 @@ async def download_and_store(
         ).eq("message_id", message_uuid).execute()
 
         logger.info("Media stored: %s (%d bytes)", storage_path, len(content))
+
+        # 5. Si image, lancer l'analyse vision Claude
+        if data_type == "image" and updated.data:
+            media_uuid = updated.data[0]["id"]
+            try:
+                await vision_service.analyze_image(
+                    media_id=media_uuid,
+                    image_bytes=content,
+                    mime_type=content_type,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Vision analysis failed for %s: %s", media_uuid, exc)
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("download_and_store failed: %s", exc)
