@@ -19,6 +19,7 @@ from typing import Any
 from app.config import settings
 from app.db import get_supabase
 from app.services import media as media_service
+from app.services.ai import classify as classify_service
 from app.services.groups import get_or_create_pilot_group_id
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,14 @@ async def handle_waha_event(payload: dict[str, Any]) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Media download failed for %s: %s",
                              msg_row["external_message_id"], exc)
+
+    # 6. Classification IA (texte + légende)
+    enriched_text = (msg_row.get("raw_text") or "").strip()
+    if enriched_text:
+        try:
+            await classify_service.classify_message(message_uuid, enriched_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Classification failed for %s: %s", message_uuid, exc)
 
     return {"status": "stored", "message_id": message_uuid}
 

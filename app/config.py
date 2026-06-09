@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     pilot_group_id: str
     company_id: str
 
+    # IA
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    classification_model: str = "claude-haiku-4-5"
+    transcription_model: str = "whisper-1"
+
     # App
     log_level: str = "INFO"
 

@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v7: URL-encode @ in media path so Caddy stops returning 503
+# v8: AI pipeline — Claude classification on text messages
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
