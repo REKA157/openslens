@@ -101,10 +101,18 @@ Schéma JSON à produire EXACTEMENT :
 }}"""
 
 
-async def classify_message(message_uuid: str, enriched_text: str) -> dict | None:
+async def classify_message(
+    message_uuid: str,
+    enriched_text: str,
+    *,
+    skip_if_exists: bool = True,
+) -> dict | None:
     """
     Classifie un message via Claude et stocke le résultat dans
     message_classifications. Retourne le dict ou None si erreur.
+
+    skip_if_exists=True : si une classification existe déjà pour ce message,
+    on ne fait rien (utile pour le retraitement en lot, évite double facturation).
     """
     if not settings.anthropic_api_key:
         logger.warning("ANTHROPIC_API_KEY non configurée, skip classification")
@@ -113,6 +121,20 @@ async def classify_message(message_uuid: str, enriched_text: str) -> dict | None
     if not enriched_text or len(enriched_text.strip()) < 2:
         logger.debug("Message vide ou trop court, skip classification")
         return None
+
+    sb = get_supabase()
+
+    if skip_if_exists:
+        existing = (
+            sb.table("message_classifications")
+            .select("id")
+            .eq("message_id", message_uuid)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            logger.debug("Classification déjà présente pour %s, skip", message_uuid)
+            return None
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
@@ -175,8 +197,9 @@ async def classify_message(message_uuid: str, enriched_text: str) -> dict | None
         "model_used": settings.classification_model,
     }
 
-    sb = get_supabase()
-    sb.table("message_classifications").insert(row).execute()
+    sb.table("message_classifications").upsert(
+        row, on_conflict="message_id"
+    ).execute()
 
     logger.info(
         "Classified message %s as %s (priority=%s, confidence=%.2f)",

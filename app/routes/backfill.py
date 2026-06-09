@@ -16,7 +16,9 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.db import get_supabase
 from app.services import ingest
+from app.services.ai import classify as classify_service
 from app.waha import WahaClient
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -25,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 class BackfillRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=2000)
+
+
+class ReclassifyRequest(BaseModel):
+    limit: int = Field(default=200, ge=1, le=2000)
+    skip_if_exists: bool = True
 
 
 @router.post("/backfill")
@@ -71,4 +78,51 @@ async def backfill(
             stats["errors"] += 1
 
     logger.info("Backfill terminé: %s", stats)
+    return stats
+
+
+@router.post("/reclassify")
+async def reclassify(
+    body: ReclassifyRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Reclasse les anciens messages texte qui n'ont pas encore de
+    classification IA. Utile pour rattraper l'historique après avoir
+    activé le pipeline IA.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    sb = get_supabase()
+
+    rows = (
+        sb.table("whatsapp_messages")
+        .select("id,raw_text")
+        .order("ingested_at", desc=True)
+        .limit(body.limit)
+        .execute()
+    )
+
+    stats = {"total": len(rows.data), "classified": 0, "skipped": 0, "errors": 0}
+
+    for row in rows.data:
+        text = row.get("raw_text") or ""
+        if not text.strip():
+            stats["skipped"] += 1
+            continue
+        try:
+            result = await classify_service.classify_message(
+                row["id"], text, skip_if_exists=body.skip_if_exists
+            )
+            if result is None:
+                stats["skipped"] += 1
+            else:
+                stats["classified"] += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Reclassify failed for %s: %s", row["id"], exc)
+            stats["errors"] += 1
+
+    logger.info("Reclassify terminé: %s", stats)
     return stats
