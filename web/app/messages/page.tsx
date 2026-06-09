@@ -3,8 +3,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { Nav } from "@/components/Nav";
 
-type Row = {
+type Message = {
   id: string;
   external_message_id: string;
   sender_phone: string | null;
@@ -12,24 +13,29 @@ type Row = {
   message_type: string;
   raw_text: string | null;
   sent_at: string;
-  message_classifications:
-    | {
-        business_category: string | null;
-        priority: string | null;
-        summary: string | null;
-        action_required: boolean;
-        confidence: number | null;
-        requires_human_review: boolean;
-      }[]
-    | null;
-  whatsapp_media:
-    | {
-        id: string;
-        media_type: string;
-        storage_path: string | null;
-        mime_type: string | null;
-      }[]
-    | null;
+};
+
+type Classification = {
+  message_id: string;
+  business_category: string | null;
+  priority: string | null;
+  summary: string | null;
+  action_required: boolean;
+  confidence: number | null;
+  requires_human_review: boolean;
+};
+
+type Media = {
+  id: string;
+  message_id: string;
+  media_type: string;
+  storage_path: string | null;
+  mime_type: string | null;
+};
+
+type EnrichedRow = Message & {
+  classification: Classification | null;
+  media: Media | null;
 };
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -41,58 +47,71 @@ const PRIORITY_COLORS: Record<string, string> = {
 
 export default function MessagesPage() {
   const router = useRouter();
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<EnrichedRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCategory, setFilterCategory] = useState<string>("all");
   const [filterPriority, setFilterPriority] = useState<string>("all");
 
-  // Auth guard
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.replace("/login");
-      }
+      if (!data.session) router.replace("/login");
     });
   }, [router]);
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
+
+    // 1. Messages (les 100 plus récents)
+    const { data: messages, error: msgErr } = await supabase
       .from("whatsapp_messages")
       .select(
-        `
-        id,
-        external_message_id,
-        sender_phone,
-        sender_display_name,
-        message_type,
-        raw_text,
-        sent_at,
-        message_classifications (
-          business_category,
-          priority,
-          summary,
-          action_required,
-          confidence,
-          requires_human_review
-        ),
-        whatsapp_media (
-          id,
-          media_type,
-          storage_path,
-          mime_type
-        )
-        `
+        "id,external_message_id,sender_phone,sender_display_name,message_type,raw_text,sent_at"
       )
       .order("sent_at", { ascending: false })
       .limit(100);
 
-    if (error) {
-      console.error("Fetch messages error:", error);
+    if (msgErr || !messages) {
+      console.error("Fetch messages error:", msgErr);
       setRows([]);
-    } else {
-      setRows(data as Row[]);
+      setLoading(false);
+      return;
     }
+
+    const ids = messages.map((m) => m.id);
+    if (ids.length === 0) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+
+    // 2. Classifications de ces messages
+    const { data: classifications } = await supabase
+      .from("message_classifications")
+      .select(
+        "message_id,business_category,priority,summary,action_required,confidence,requires_human_review"
+      )
+      .in("message_id", ids);
+
+    // 3. Médias de ces messages
+    const { data: medias } = await supabase
+      .from("whatsapp_media")
+      .select("id,message_id,media_type,storage_path,mime_type")
+      .in("message_id", ids);
+
+    // 4. Merge
+    const cMap = new Map<string, Classification>();
+    (classifications || []).forEach((c) => cMap.set(c.message_id, c as Classification));
+
+    const mMap = new Map<string, Media>();
+    (medias || []).forEach((m) => mMap.set(m.message_id, m as Media));
+
+    const enriched: EnrichedRow[] = (messages as Message[]).map((m) => ({
+      ...m,
+      classification: cMap.get(m.id) ?? null,
+      media: mMap.get(m.id) ?? null,
+    }));
+
+    setRows(enriched);
     setLoading(false);
   }, []);
 
@@ -106,42 +125,28 @@ export default function MessagesPage() {
   }
 
   const filtered = rows.filter((r) => {
-    const c = r.message_classifications?.[0];
-    if (filterCategory !== "all" && c?.business_category !== filterCategory) return false;
-    if (filterPriority !== "all" && c?.priority !== filterPriority) return false;
+    if (filterCategory !== "all" && r.classification?.business_category !== filterCategory) return false;
+    if (filterPriority !== "all" && r.classification?.priority !== filterPriority) return false;
     return true;
   });
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black">
-      {/* Header */}
-      <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-black/80">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
-          <div>
-            <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-              OpsLens — Journal
-            </h1>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Groupe ADS Multi Sites · {filtered.length} message{filtered.length > 1 ? "s" : ""}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={fetchRows}
-              className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            >
-              Rafraîchir
-            </button>
-            <button
-              onClick={handleLogout}
-              className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            >
-              Déconnexion
-            </button>
-          </div>
+      <Nav />
+      <div className="border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-black/80">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Groupe ADS Multi Sites · {filtered.length} message
+            {filtered.length > 1 ? "s" : ""}
+          </p>
+          <button
+            onClick={fetchRows}
+            className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            Rafraîchir
+          </button>
         </div>
 
-        {/* Filtres */}
         <div className="mx-auto flex max-w-7xl flex-wrap gap-2 border-t border-zinc-200 px-4 py-2 dark:border-zinc-800">
           <select
             value={filterCategory}
@@ -151,15 +156,20 @@ export default function MessagesPage() {
             <option value="all">Toutes catégories</option>
             <option value="incident">Incident</option>
             <option value="urgence">Urgence</option>
-            <option value="demande_action">Demande d'action</option>
+            <option value="demande_action">Demande d&apos;action</option>
             <option value="validation">Validation</option>
+            <option value="refus">Refus</option>
             <option value="livraison">Livraison</option>
             <option value="intervention">Intervention</option>
             <option value="panne">Panne</option>
             <option value="retard">Retard</option>
             <option value="document_recu">Document reçu</option>
+            <option value="document_manquant">Document manquant</option>
             <option value="preuve_photo">Preuve photo</option>
+            <option value="instruction">Instruction</option>
+            <option value="cloture_action">Clôture action</option>
             <option value="info">Info</option>
+            <option value="non_exploitable">Non exploitable</option>
           </select>
 
           <select
@@ -174,9 +184,8 @@ export default function MessagesPage() {
             <option value="low">Basse</option>
           </select>
         </div>
-      </header>
+      </div>
 
-      {/* Liste */}
       <main className="mx-auto max-w-7xl px-4 py-6">
         {loading ? (
           <p className="text-sm text-zinc-500">Chargement…</p>
@@ -194,12 +203,12 @@ export default function MessagesPage() {
   );
 }
 
-function MessageCard({ row }: { row: Row }) {
-  const c = row.message_classifications?.[0];
-  const media = row.whatsapp_media?.[0];
+function MessageCard({ row }: { row: EnrichedRow }) {
+  const c = row.classification;
+  const media = row.media;
   const priorityClass = c?.priority
     ? PRIORITY_COLORS[c.priority] ?? PRIORITY_COLORS.low
-    : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-500";
+    : "";
 
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
 

@@ -24,7 +24,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.replace("/messages");
+    router.replace("/dashboard");
   }
 
   return (

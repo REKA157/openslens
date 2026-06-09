@@ -10,7 +10,7 @@ export default function Home() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
-        router.replace("/messages");
+        router.replace("/dashboard");
       } else {
         router.replace("/login");
       }

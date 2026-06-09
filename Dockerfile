@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v10: add /admin/reclassify endpoint for backfilling existing messages
+# v11: add /api/dashboard endpoint + CORS for frontend stats
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
