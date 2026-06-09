@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v6: tolerate self-signed cert when calling WAHA (Caddy fallback)
+# v7: URL-encode @ in media path so Caddy stops returning 503
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

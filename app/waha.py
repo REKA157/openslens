@@ -11,7 +11,7 @@ est interne au conteneur WAHA, pas joignable depuis le backend. On en
 extrait toujours le path et on l'appelle via notre base_url public + clé API.
 """
 
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -19,9 +19,17 @@ from app.config import settings
 
 
 def _strip_to_path(url: str) -> str:
-    """Garde uniquement path + query d'une URL absolue (sert à neutraliser le localhost)."""
+    """
+    Garde uniquement path + query d'une URL absolue (neutralise le localhost).
+
+    URL-encode les caractères spéciaux dans le path (notamment `@` présent dans
+    les filenames WhatsApp `<msg_id>_<jid>@lid.jpeg`). Sans encodage, Caddy
+    interprète `@` comme séparateur user@host et renvoie 503.
+    """
     parsed = urlparse(url)
     path = parsed.path or "/"
+    # safe='/' garde les / non-encodés, encode tout le reste (@ -> %40, etc.)
+    path = quote(path, safe="/")
     if parsed.query:
         path += "?" + parsed.query
     return path
