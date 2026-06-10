@@ -121,13 +121,13 @@ export default function PredictionsPage() {
             onClick={handleGenerateInsights}
             disabled={generating || loading || !data}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-            title="Croise signaux + messages réels via Claude Sonnet (~0,08 $)"
+            title="Analyse experte croisant signaux statistiques et messages réels (~0,08 $)"
           >
             {generating
-              ? "Analyse IA en cours (15-30 s)…"
+              ? "Diagnostic en cours (15-30 s)…"
               : insights
-                ? "Régénérer les insights IA"
-                : "🧠 Générer insights IA"}
+                ? "Relancer le diagnostic prédictif"
+                : "Lancer le diagnostic prédictif"}
           </button>
         </header>
 

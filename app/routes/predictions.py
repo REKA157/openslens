@@ -193,8 +193,8 @@ async def predictions_insights(
             signals, sites, contextual,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Insights IA échoués : %s", exc)
-        raise HTTPException(500, detail=f"Échec génération insights : {exc}")
+        logger.exception("Diagnostic prédictif échoué : %s", exc)
+        raise HTTPException(500, detail=f"Échec du diagnostic prédictif : {exc}")
 
     for m in messages:
         m.pop("_parsed_ts", None)

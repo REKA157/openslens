@@ -293,7 +293,7 @@ export async function generatePredictionsInsights(
   });
   if (!r.ok) {
     const err = await r.text();
-    throw new Error(`Insights ${r.status}: ${err}`);
+    throw new Error(`Diagnostic ${r.status}: ${err}`);
   }
   return r.json();
 }
