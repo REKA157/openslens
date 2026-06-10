@@ -9,6 +9,7 @@ const TABS = [
   { href: "/reports", label: "Rapports" },
   { href: "/messages", label: "Journal" },
   { href: "/sites", label: "Sites" },
+  { href: "/predictions", label: "Prédictions" },
 ];
 
 export function Nav() {

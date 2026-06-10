@@ -175,6 +175,75 @@ export async function fetchSite(siteId: string): Promise<Site> {
   return r.json();
 }
 
+// --- Predictions ---
+
+export type SiteAnomaly = {
+  site_id: string;
+  site_name: string;
+  region: string | null;
+  current_week_start: string;
+  volume: { current: number; mean_history: number; z_score: number | null };
+  urgent: { current: number; mean_history: number; z_score: number | null };
+  severity: "medium" | "high";
+  history_weeks_used: number;
+};
+
+export type SiteTrend = {
+  site_id: string;
+  site_name: string;
+  region: string | null;
+  window_recent: [string, string];
+  window_prev: [string, string];
+  volume: { recent: number; prev: number; delta_pct: number };
+  by_category: Record<
+    string,
+    { recent: number; prev: number; delta_pct: number }
+  >;
+};
+
+export type SiteForecast = {
+  site_id: string;
+  site_name: string;
+  region: string | null;
+  next_week_start: string;
+  expected_total: number;
+  confidence_band: number;
+  by_day: { day: string; expected: number; stdev: number }[];
+  history_weeks: number;
+};
+
+export type RecurringFailure = {
+  site_id: string;
+  site_name: string;
+  vehicle: string;
+  incidents_count: number;
+  examples: { date: string; summary: string; priority: string | null }[];
+};
+
+export type PredictionsData = {
+  ref_date: string;
+  sites_count: number;
+  messages_scanned: number;
+  classifications_loaded: number;
+  anomalies: SiteAnomaly[];
+  trends: SiteTrend[];
+  forecast: SiteForecast[];
+  recurring_failures: RecurringFailure[];
+  warning?: string;
+};
+
+export async function fetchPredictions(
+  date?: string,
+): Promise<PredictionsData> {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+  const r = await fetch(`/api/predictions${qs}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Predictions ${r.status}`);
+  return r.json();
+}
+
 export type DiscoverProposal = {
   sites: {
     canonical_name: string;

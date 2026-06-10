@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v26: refresh-senders robust matching (±3s tolerance + media attachment patterns)
+# v27: predictive analytics (/api/predictions): anomalies/trends/forecast/failures
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
