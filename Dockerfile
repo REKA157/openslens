@@ -1,13 +1,21 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v31: JSON parsing robuste + max_tokens 4096 (fix Expecting value char 8413)
+# v32: Phase 1 prédictif — Prophet forecast (build essentials added for Stan)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Deps système pour Prophet (Stan/cmdstanpy)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Install Python deps first (better layer caching)
+# Install Python deps first (better layer caching).
+# Prophet install est lourd (~10 min) car cmdstanpy télécharge Stan.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

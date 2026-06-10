@@ -9,7 +9,8 @@ const TABS = [
   { href: "/reports", label: "Rapports" },
   { href: "/messages", label: "Journal" },
   { href: "/sites", label: "Sites" },
-  { href: "/predictions", label: "Prédictions" },
+  { href: "/predictions", label: "Aide à la décision" },
+  { href: "/forecast", label: "Prévisions" },
 ];
 
 export function Nav() {

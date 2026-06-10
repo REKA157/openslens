@@ -355,6 +355,66 @@ export async function generatePredictionsInsightsAsync(
   throw new Error("Timeout client : le diagnostic prend plus de 3 min");
 }
 
+// --- Vraie prédiction Phase 1 (Prophet) ---
+
+export type ForecastTrend = "haussiere" | "baissiere" | "stable";
+
+export type ForecastHistoryPoint = {
+  date: string;
+  actual: number;
+};
+
+export type ForecastPredictionPoint = {
+  date: string;
+  yhat: number;
+  yhat_lower: number;
+  yhat_upper: number;
+};
+
+export type SiteForecastModel = {
+  site_id: string;
+  site_name: string;
+  region: string | null;
+  horizon_days: number;
+  history: ForecastHistoryPoint[];
+  predictions: ForecastPredictionPoint[];
+  summary: {
+    history_days: number;
+    history_total_messages: number;
+    expected_total: number;
+    expected_lower: number;
+    expected_upper: number;
+    trend: ForecastTrend;
+  };
+};
+
+export type ForecastResponse = {
+  horizon_days: number;
+  ref_date: string;
+  sites_count: number;
+  modelled_count: number;
+  messages_scanned: number;
+  sites: SiteForecastModel[];
+  warning?: string;
+};
+
+export async function fetchForecast(
+  horizonDays = 30,
+  siteId?: string,
+): Promise<ForecastResponse> {
+  const qs = new URLSearchParams({ horizon_days: String(horizonDays) });
+  if (siteId) qs.set("site_id", siteId);
+  const r = await fetch(`/api/forecast?${qs.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Forecast ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
 export type DiscoverProposal = {
   sites: {
     canonical_name: string;

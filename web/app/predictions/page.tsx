@@ -112,8 +112,19 @@ export default function PredictionsPage() {
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-              Intelligence prédictive
+              Aide à la décision
             </h1>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Statistiques descriptives + analyse experte par Claude Sonnet.
+              Pour les vraies prévisions de volume, voir{" "}
+              <Link
+                href="/forecast"
+                className="font-medium underline hover:text-zinc-700 dark:hover:text-zinc-300"
+              >
+                Prévisions
+              </Link>
+              .
+            </p>
             {data && (
               <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                 Référence : {data.ref_date} · {data.sites_count} sites ·{" "}
