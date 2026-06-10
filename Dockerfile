@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v19: import-export dedup + row-by-row fallback when batch fails
+# v20: reclassify parallel + pagination (limit 10k, offset, concurrency)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

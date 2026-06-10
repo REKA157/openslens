@@ -9,7 +9,9 @@ Endpoint admin pour charger l'historique du groupe pilote.
 À lancer manuellement (idempotents grâce aux upserts).
 """
 
+import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -30,8 +32,10 @@ class BackfillRequest(BaseModel):
 
 
 class ReclassifyRequest(BaseModel):
-    limit: int = Field(default=200, ge=1, le=2000)
+    limit: int = Field(default=2000, ge=1, le=10000)
+    offset: int = Field(default=0, ge=0)
     skip_if_exists: bool = True
+    concurrency: int = Field(default=10, ge=1, le=30)
 
 
 @router.post("/backfill")
@@ -87,43 +91,74 @@ async def reclassify(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     """
-    Reclasse les anciens messages texte qui n'ont pas encore de
-    classification IA. Utile pour rattraper l'historique après avoir
-    activé le pipeline IA.
+    Reclasse les messages texte qui n'ont pas encore de classification IA.
+
+    Paramètres :
+      - limit (≤ 10000) : nombre max de messages à examiner
+      - offset           : pour reprendre une seconde passe sans re-lire les premiers
+      - skip_if_exists   : si True (défaut), ne reclasse pas les messages déjà classifiés
+      - concurrency      : nombre d'appels Claude parallèles (défaut 10)
+
+    Tri stable par sent_at ASC pour que offset=N pointe toujours sur les mêmes
+    messages. Combine bien : limit=2000 offset=0, puis 2000 offset=2000, etc.
     """
     if settings.waha_webhook_secret:
         if x_admin_token != settings.waha_webhook_secret:
             raise HTTPException(status_code=401, detail="invalid admin token")
 
     sb = get_supabase()
+    t0 = time.monotonic()
 
-    rows = (
+    rows_res = (
         sb.table("whatsapp_messages")
         .select("id,raw_text")
-        .order("ingested_at", desc=True)
+        .order("sent_at", desc=False)
         .limit(body.limit)
+        .offset(body.offset)
         .execute()
     )
+    rows = rows_res.data or []
 
-    stats = {"total": len(rows.data), "classified": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "examined": len(rows),
+        "offset": body.offset,
+        "limit": body.limit,
+        "concurrency": body.concurrency,
+        "classified": 0,
+        "skipped_empty": 0,
+        "skipped_existing": 0,
+        "errors": 0,
+    }
 
-    for row in rows.data:
-        text = row.get("raw_text") or ""
-        if not text.strip():
-            stats["skipped"] += 1
-            continue
-        try:
-            result = await classify_service.classify_message(
-                row["id"], text, skip_if_exists=body.skip_if_exists
-            )
-            if result is None:
-                stats["skipped"] += 1
-            else:
-                stats["classified"] += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Reclassify failed for %s: %s", row["id"], exc)
-            stats["errors"] += 1
+    # Pré-filtre : exclure les messages sans texte (économise des allers-retours DB)
+    work = [r for r in rows if (r.get("raw_text") or "").strip()]
+    stats["skipped_empty"] = len(rows) - len(work)
 
+    if not work:
+        logger.info("Reclassify : rien à faire pour offset=%d", body.offset)
+        stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+        return stats
+
+    sem = asyncio.Semaphore(body.concurrency)
+
+    async def worker(row: dict) -> str:
+        async with sem:
+            try:
+                result = await classify_service.classify_message(
+                    row["id"],
+                    row["raw_text"],
+                    skip_if_exists=body.skip_if_exists,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Reclassify failed for %s: %s", row["id"], exc)
+                return "error"
+            return "skipped_existing" if result is None else "classified"
+
+    results = await asyncio.gather(*(worker(r) for r in work))
+    for outcome in results:
+        stats[outcome] = stats.get(outcome, 0) + 1
+
+    stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
     logger.info("Reclassify terminé: %s", stats)
     return stats
 

@@ -109,6 +109,10 @@ class _RestQuery:
         self._params["limit"] = str(n)
         return self
 
+    def offset(self, n: int) -> "_RestQuery":
+        self._params["offset"] = str(n)
+        return self
+
     def order(self, column: str, *, desc: bool = False) -> "_RestQuery":
         self._params["order"] = f"{column}.{'desc' if desc else 'asc'}"
         return self
