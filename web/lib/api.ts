@@ -1,16 +1,15 @@
 /**
  * Helpers pour appeler le backend FastAPI OpsLens.
  *
- * Le backend est exposé en HTTPS sur opslens-api.duckdns.org avec un vrai
- * certificat Let's Encrypt, donc on peut l'appeler directement depuis le
- * navigateur sans CORS, mixed content ni proxy.
+ * On passe par les routes proxy de Next.js (/api/...) qui forwardent
+ * vers le backend réel. Avantages :
+ *  - same-origin pour le navigateur (pas de CORS, pas de souci de cert)
+ *  - Vercel serveur fait l'appel HTTPS au backend sans Bitdefender/firewall
+ *  - même comportement en local dev et en prod Vercel
  */
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "https://opslens-api.duckdns.org";
-
 export async function fetchDashboard(): Promise<DashboardData> {
-  const r = await fetch(`${BACKEND_URL}/api/dashboard`, {
+  const r = await fetch(`/api/dashboard`, {
     method: "GET",
     cache: "no-store",
   });
@@ -19,7 +18,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
 }
 
 export async function fetchLatestDailyReport(): Promise<DailyReport | null> {
-  const r = await fetch(`${BACKEND_URL}/api/reports/daily/latest`, {
+  const r = await fetch(`/api/reports/daily/latest`, {
     method: "GET",
     cache: "no-store",
   });
@@ -29,7 +28,7 @@ export async function fetchLatestDailyReport(): Promise<DailyReport | null> {
 }
 
 export async function generateDailyReport(force = false): Promise<DailyReport> {
-  const r = await fetch(`${BACKEND_URL}/admin/generate-daily-report`, {
+  const r = await fetch(`/api/admin/generate-daily-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
