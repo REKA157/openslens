@@ -1,7 +1,5 @@
 /**
  * Proxy /api/dashboard → backend /api/dashboard
- * Permet au frontend d'appeler une URL same-origin et laisse Vercel (serveur)
- * faire le call HTTPS au backend. Évite les soucis de cert/firewall côté client.
  */
 
 import { NextResponse } from "next/server";
@@ -13,6 +11,31 @@ const BACKEND_URL =
   process.env.BACKEND_URL ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://opslens-api.duckdns.org";
+
+function describeError(err: unknown): Record<string, unknown> {
+  if (!(err instanceof Error)) {
+    return { raw: String(err) };
+  }
+  const out: Record<string, unknown> = {
+    name: err.name,
+    message: err.message,
+  };
+  // Node fetch erreurs ont en général un .cause avec les vrais détails
+  const cause = (err as Error & { cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const c = cause as Record<string, unknown>;
+    out.cause = {
+      message: c.message,
+      code: c.code,
+      errno: c.errno,
+      syscall: c.syscall,
+      hostname: c.hostname,
+      address: c.address,
+      port: c.port,
+    };
+  }
+  return out;
+}
 
 export async function GET() {
   const targetUrl = `${BACKEND_URL}/api/dashboard`;
@@ -27,9 +50,8 @@ export async function GET() {
       headers: { "content-type": r.headers.get("content-type") || "application/json" },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { error: "Proxy failed", target: targetUrl, message: msg },
+      { error: "Proxy failed", target: targetUrl, ...describeError(err) },
       { status: 502 }
     );
   }
