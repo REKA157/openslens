@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.db import get_supabase
+from app.services.analytics import insights as insights_service
 from app.services.analytics import predictive
 
 router = APIRouter(prefix="/api", tags=["predictions"])
@@ -38,21 +39,23 @@ def _parse_dt(s: str | None) -> datetime | None:
         return None
 
 
-@router.get("/predictions")
-async def predictions(
-    date: str | None = Query(default=None, description="YYYY-MM-DD ; défaut = aujourd'hui UTC"),
-) -> dict[str, Any]:
+def _parse_ref_date(date: str | None) -> date_cls:
     if date:
         try:
-            ref_date = date_cls.fromisoformat(date)
+            return date_cls.fromisoformat(date)
         except ValueError:
             raise HTTPException(400, detail="date doit être YYYY-MM-DD") from None
-    else:
-        ref_date = datetime.now(tz=timezone.utc).date()
+    return datetime.now(tz=timezone.utc).date()
 
+
+def _load_corpus() -> tuple[list[dict], list[dict], dict[str, dict]]:
+    """
+    Charge sites actifs + tous les messages + classifications correspondantes.
+    Pré-parse les timestamps sur les messages (champ _parsed_ts).
+    Renvoie (sites, messages, classifications_by_id).
+    """
     sb = get_supabase()
 
-    # 1. Sites actifs
     sites_res = (
         sb.table("sites")
         .select("*")
@@ -62,20 +65,6 @@ async def predictions(
     )
     sites = sites_res.data or []
 
-    if not sites:
-        return {
-            "ref_date": ref_date.isoformat(),
-            "sites_count": 0,
-            "messages_scanned": 0,
-            "classifications_loaded": 0,
-            "anomalies": [],
-            "trends": [],
-            "forecast": [],
-            "recurring_failures": [],
-            "warning": "Aucun site canonique défini. Va sur /sites pour les paramétrer.",
-        }
-
-    # 2. Messages (paginé par 1000)
     messages: list[dict] = []
     PAGE = 1000
     page = 0
@@ -96,11 +85,9 @@ async def predictions(
             break
         page += 1
 
-    # Pré-parser les timestamps une fois pour tous
     for m in messages:
         m["_parsed_ts"] = _parse_dt(m.get("sent_at"))
 
-    # 3. Classifications (par chunks de 100 ids)
     msg_ids = [m["id"] for m in messages]
     classifications: list[dict] = []
     for i in range(0, len(msg_ids), 100):
@@ -114,21 +101,53 @@ async def predictions(
         classifications.extend(res.data or [])
     classifications_by_id = {c["message_id"]: c for c in classifications}
 
-    # 4. Calcul des 4 signaux
-    anomalies = predictive.detect_anomalies(
-        messages, classifications_by_id, sites, ref_date
-    )
-    trends = predictive.compute_trends(
-        messages, classifications_by_id, sites, ref_date
-    )
-    forecast = predictive.forecast_demand(
-        messages, classifications_by_id, sites, ref_date
-    )
-    failures = predictive.detect_recurring_failures(
-        messages, classifications_by_id, sites, ref_date
-    )
+    return sites, messages, classifications_by_id
 
-    # Nettoyage : retire le champ technique avant le retour
+
+def _compute_signals(
+    sites: list[dict],
+    messages: list[dict],
+    classifications_by_id: dict[str, dict],
+    ref_date: date_cls,
+) -> dict[str, Any]:
+    return {
+        "anomalies": predictive.detect_anomalies(
+            messages, classifications_by_id, sites, ref_date,
+        ),
+        "trends": predictive.compute_trends(
+            messages, classifications_by_id, sites, ref_date,
+        ),
+        "forecast": predictive.forecast_demand(
+            messages, classifications_by_id, sites, ref_date,
+        ),
+        "recurring_failures": predictive.detect_recurring_failures(
+            messages, classifications_by_id, sites, ref_date,
+        ),
+    }
+
+
+@router.get("/predictions")
+async def predictions(
+    date: str | None = Query(default=None, description="YYYY-MM-DD ; défaut = aujourd'hui UTC"),
+) -> dict[str, Any]:
+    ref_date = _parse_ref_date(date)
+    sites, messages, classifications_by_id = _load_corpus()
+
+    if not sites:
+        return {
+            "ref_date": ref_date.isoformat(),
+            "sites_count": 0,
+            "messages_scanned": 0,
+            "classifications_loaded": 0,
+            "anomalies": [],
+            "trends": [],
+            "forecast": [],
+            "recurring_failures": [],
+            "warning": "Aucun site canonique défini. Va sur /sites pour les paramétrer.",
+        }
+
+    signals = _compute_signals(sites, messages, classifications_by_id, ref_date)
+
     for m in messages:
         m.pop("_parsed_ts", None)
 
@@ -136,9 +155,55 @@ async def predictions(
         "ref_date": ref_date.isoformat(),
         "sites_count": len(sites),
         "messages_scanned": len(messages),
-        "classifications_loaded": len(classifications),
-        "anomalies": anomalies,
-        "trends": trends,
-        "forecast": forecast,
-        "recurring_failures": failures,
+        "classifications_loaded": len(classifications_by_id),
+        **signals,
+    }
+
+
+@router.post("/predictions/insights")
+async def predictions_insights(
+    date: str | None = Query(default=None, description="YYYY-MM-DD ; défaut = aujourd'hui UTC"),
+) -> dict[str, Any]:
+    """
+    Croisement quantitatif × qualitatif via Claude Sonnet.
+
+    Étapes :
+     1. Calcule les 4 signaux statistiques (anomalies/trends/forecast/failures)
+     2. Récupère un échantillon des 15 derniers messages classifiés par site
+     3. Appelle Claude Sonnet → alertes priorisées + actions recommandées + croisements
+
+    Latence : 15-30 s. Coût : ~0,05-0,10 $ par appel.
+    """
+    ref_date = _parse_ref_date(date)
+    sites, messages, classifications_by_id = _load_corpus()
+
+    if not sites:
+        raise HTTPException(
+            400,
+            detail="Aucun site canonique défini. Va sur /sites pour les paramétrer avant les insights IA.",
+        )
+
+    signals = _compute_signals(sites, messages, classifications_by_id, ref_date)
+    contextual = insights_service.gather_context_per_site(
+        messages, classifications_by_id, sites, ref_date,
+    )
+
+    try:
+        ai_insights = await insights_service.generate_insights(
+            signals, sites, contextual,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Insights IA échoués : %s", exc)
+        raise HTTPException(500, detail=f"Échec génération insights : {exc}")
+
+    for m in messages:
+        m.pop("_parsed_ts", None)
+
+    return {
+        "ref_date": ref_date.isoformat(),
+        "sites_count": len(sites),
+        "messages_scanned": len(messages),
+        "classifications_loaded": len(classifications_by_id),
+        **signals,
+        "insights": ai_insights,
     }

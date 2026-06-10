@@ -244,6 +244,60 @@ export async function fetchPredictions(
   return r.json();
 }
 
+// --- AI Insights (Claude Sonnet) ---
+
+export type AlertSeverity = "critical" | "warning" | "info";
+export type AlertCategory =
+  | "surcharge"
+  | "qualite_securite"
+  | "equipement"
+  | "silence_anormal"
+  | "opportunite";
+
+export type AiAlert = {
+  site_id: string | null;
+  site_name: string;
+  severity: AlertSeverity;
+  category: AlertCategory;
+  title: string;
+  evidence: string;
+  recommended_actions: string[];
+  timeline: "immediat" | "cette_semaine" | "ce_mois";
+};
+
+export type CrossSignal = {
+  title: string;
+  involved_sites: string[];
+  explanation: string;
+  implications: string;
+};
+
+export type AiInsights = {
+  narrative_overview: string;
+  alerts: AiAlert[];
+  cross_signals: CrossSignal[];
+  recommendations_by_site: Record<string, string[]>;
+};
+
+export type PredictionsInsightsData = PredictionsData & {
+  insights: AiInsights;
+};
+
+export async function generatePredictionsInsights(
+  date?: string,
+): Promise<PredictionsInsightsData> {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+  const r = await fetch(`/api/predictions/insights${qs}`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Insights ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
 export type DiscoverProposal = {
   sites: {
     canonical_name: string;

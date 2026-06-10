@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v27: predictive analytics (/api/predictions): anomalies/trends/forecast/failures
+# v28: cross qual/quant insights via Sonnet (/api/predictions/insights)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
