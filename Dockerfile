@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v20: reclassify parallel + pagination (limit 10k, offset, concurrency)
+# v21: reclassify-missing endpoint (anti-join, robust catch-up)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

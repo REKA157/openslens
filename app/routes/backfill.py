@@ -38,6 +38,12 @@ class ReclassifyRequest(BaseModel):
     concurrency: int = Field(default=10, ge=1, le=30)
 
 
+class ReclassifyMissingRequest(BaseModel):
+    """Classifie les messages texte qui n'ont AUCUNE classification en base."""
+    concurrency: int = Field(default=5, ge=1, le=20)
+    max_messages: int = Field(default=10000, ge=1, le=20000)
+
+
 @router.post("/backfill")
 async def backfill(
     body: BackfillRequest,
@@ -223,6 +229,131 @@ async def waha_watchdog(
         return result
     finally:
         await waha.aclose()
+
+
+@router.post("/reclassify-missing")
+async def reclassify_missing(
+    body: ReclassifyMissingRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Classifie uniquement les messages texte SANS classification existante.
+
+    Différent de /reclassify :
+    - Fait un anti-join explicite (1 fetch des message_ids classifiés, 1 fetch
+      des messages texte, diff en mémoire) au lieu de skip-par-row.
+    - Compte sans ambiguïté "newly_classified" vs "errors" (pas de catégorie
+      "skipped_existing" trompeuse).
+    - Concurrency par défaut à 5 pour limiter le rate-limit Anthropic.
+
+    Idéal pour un rattrapage après un /reclassify partiel.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    sb = get_supabase()
+    t0 = time.monotonic()
+    PAGE = 1000
+
+    # 1. Toutes les classifications existantes (paginé par 1000)
+    classified_ids: set[str] = set()
+    page = 0
+    while True:
+        res = (
+            sb.table("message_classifications")
+            .select("message_id")
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        classified_ids.update(r["message_id"] for r in rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 2. Tous les messages texte (paginé)
+    all_messages: list[dict] = []
+    page = 0
+    while page * PAGE < body.max_messages:
+        res = (
+            sb.table("whatsapp_messages")
+            .select("id,raw_text")
+            .order("sent_at", desc=False)
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        all_messages.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 3. Filtre : pas encore classifié ET texte non vide
+    missing = [
+        m for m in all_messages
+        if m["id"] not in classified_ids
+        and (m.get("raw_text") or "").strip()
+        and len((m.get("raw_text") or "").strip()) >= 2
+    ]
+
+    stats = {
+        "classified_existing_total": len(classified_ids),
+        "messages_with_text_total": sum(
+            1 for m in all_messages
+            if (m.get("raw_text") or "").strip()
+            and len((m.get("raw_text") or "").strip()) >= 2
+        ),
+        "missing_at_start": len(missing),
+        "concurrency": body.concurrency,
+        "newly_classified": 0,
+        "errors": 0,
+        "error_message_ids": [],
+    }
+
+    if not missing:
+        stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+        logger.info("reclassify-missing: nothing to do (%s)", stats)
+        return stats
+
+    sem = asyncio.Semaphore(body.concurrency)
+    errors: list[str] = []
+
+    async def worker(row: dict) -> str:
+        async with sem:
+            try:
+                result = await classify_service.classify_message(
+                    row["id"],
+                    row["raw_text"],
+                    skip_if_exists=False,  # on a déjà filtré, pas besoin
+                )
+                if result is None:
+                    # classify_message catch les exceptions et retourne None
+                    return "error"
+                return "classified"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Classification crash for %s: %s", row["id"], exc)
+                return "error"
+
+    results = await asyncio.gather(*(worker(r) for r in missing))
+    for outcome, row in zip(results, missing, strict=True):
+        if outcome == "classified":
+            stats["newly_classified"] += 1
+        else:
+            stats["errors"] += 1
+            if len(errors) < 20:
+                errors.append(row["id"])
+
+    stats["error_message_ids"] = errors
+    stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+    logger.info("reclassify-missing terminé: %s", {**stats, "error_message_ids": f"{len(errors)} samples"})
+    return stats
 
 
 @router.post("/import-export")
