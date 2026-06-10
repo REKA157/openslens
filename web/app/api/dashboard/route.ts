@@ -1,8 +1,13 @@
 /**
  * Proxy /api/dashboard → backend /api/dashboard
+ *
+ * On utilise un dispatcher undici qui ignore la validation du cert TLS,
+ * car notre Caddy en cours d'install peut servir un cert self-signed.
+ * C'est OK : on parle à NOTRE backend, pas un tiers.
  */
 
 import { NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,22 +17,19 @@ const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://opslens-api.duckdns.org";
 
+const insecureDispatcher = new Agent({
+  connect: { rejectUnauthorized: false },
+});
+
 function describeError(err: unknown): Record<string, unknown> {
-  if (!(err instanceof Error)) {
-    return { raw: String(err) };
-  }
-  const out: Record<string, unknown> = {
-    name: err.name,
-    message: err.message,
-  };
-  // Node fetch erreurs ont en général un .cause avec les vrais détails
+  if (!(err instanceof Error)) return { raw: String(err) };
+  const out: Record<string, unknown> = { name: err.name, message: err.message };
   const cause = (err as Error & { cause?: unknown }).cause;
   if (cause && typeof cause === "object") {
     const c = cause as Record<string, unknown>;
     out.cause = {
       message: c.message,
       code: c.code,
-      errno: c.errno,
       syscall: c.syscall,
       hostname: c.hostname,
       address: c.address,
@@ -40,9 +42,8 @@ function describeError(err: unknown): Record<string, unknown> {
 export async function GET() {
   const targetUrl = `${BACKEND_URL}/api/dashboard`;
   try {
-    const r = await fetch(targetUrl, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(25000),
+    const r = await undiciFetch(targetUrl, {
+      dispatcher: insecureDispatcher,
     });
     const body = await r.text();
     return new NextResponse(body, {

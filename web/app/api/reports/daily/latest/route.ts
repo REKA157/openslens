@@ -1,8 +1,10 @@
 /**
  * Proxy /api/reports/daily/latest → backend
+ * Bypass cert validation (Caddy self-signed cert tant qu'on n'a pas LE).
  */
 
 import { NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,13 +14,14 @@ const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://opslens-api.duckdns.org";
 
+const insecureDispatcher = new Agent({
+  connect: { rejectUnauthorized: false },
+});
+
 export async function GET() {
   const targetUrl = `${BACKEND_URL}/api/reports/daily/latest`;
   try {
-    const r = await fetch(targetUrl, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(25000),
-    });
+    const r = await undiciFetch(targetUrl, { dispatcher: insecureDispatcher });
     const body = await r.text();
     return new NextResponse(body, {
       status: r.status,

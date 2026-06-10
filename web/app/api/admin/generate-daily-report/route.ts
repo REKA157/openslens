@@ -1,11 +1,10 @@
 /**
  * Proxy POST /api/admin/generate-daily-report → backend /admin/generate-daily-report
- *
- * (Note : côté frontend on appelle /api/admin/... mais le backend expose à
- *  /admin/... sans /api. Le proxy fait l'adaptation.)
+ * Bypass cert validation.
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,16 +16,19 @@ const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://opslens-api.duckdns.org";
 
+const insecureDispatcher = new Agent({
+  connect: { rejectUnauthorized: false },
+});
+
 export async function POST(request: NextRequest) {
   const targetUrl = `${BACKEND_URL}/admin/generate-daily-report`;
   try {
     const body = await request.text();
-    const r = await fetch(targetUrl, {
+    const r = await undiciFetch(targetUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
-      cache: "no-store",
-      signal: AbortSignal.timeout(55000),
+      dispatcher: insecureDispatcher,
     });
     const responseBody = await r.text();
     return new NextResponse(responseBody, {
