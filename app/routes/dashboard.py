@@ -17,7 +17,6 @@ Aucun LLM ici, pure agrégation.
 """
 
 import logging
-from calendar import monthrange
 from collections import Counter
 from datetime import date as date_cls, datetime, time, timedelta, timezone
 from typing import Any

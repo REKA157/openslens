@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v15: add WAHA watchdog endpoint for auto-restart
+# v16: dashboard date+period query params (day/week/month navigation)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

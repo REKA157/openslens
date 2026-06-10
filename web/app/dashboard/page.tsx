@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { Nav } from "@/components/Nav";
-import { fetchDashboard, DashboardData, DashboardKPIs } from "@/lib/api";
+import {
+  fetchDashboard,
+  DashboardData,
+  DashboardPeriod,
+} from "@/lib/api";
 
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: "bg-red-500",
@@ -20,11 +24,39 @@ const PRIORITY_LABELS: Record<string, string> = {
   low: "Basse",
 };
 
+const PERIOD_LABEL: Record<DashboardPeriod, string> = {
+  day: "Jour",
+  week: "Semaine",
+  month: "Mois",
+};
+
+const PREV_LABEL: Record<DashboardPeriod, string> = {
+  day: "veille",
+  week: "sem. préc.",
+  month: "mois préc.",
+};
+
+function todayIso(): string {
+  // YYYY-MM-DD en UTC pour rester aligné avec le backend
+  return new Date().toISOString().slice(0, 10);
+}
+
+function shiftDate(iso: string, period: DashboardPeriod, dir: -1 | 1): string {
+  const d = new Date(iso + "T00:00:00Z");
+  if (period === "day") d.setUTCDate(d.getUTCDate() + dir);
+  else if (period === "week") d.setUTCDate(d.getUTCDate() + 7 * dir);
+  else d.setUTCMonth(d.getUTCMonth() + dir);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [period, setPeriod] = useState<DashboardPeriod>("day");
+  const [date, setDate] = useState<string>(todayIso());
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -32,17 +64,83 @@ export default function DashboardPage() {
     });
   }, [router]);
 
-  useEffect(() => {
-    fetchDashboard()
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetchDashboard(date, period)
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [date, period]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const isToday = useMemo(() => date === todayIso(), [date]);
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black">
       <Nav />
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
+        {/* Barre de navigation temporelle */}
+        <section className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="inline-flex overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700">
+            {(["day", "week", "month"] as DashboardPeriod[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-3 py-1.5 text-xs font-medium transition ${
+                  period === p
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {PERIOD_LABEL[p]}
+              </button>
+            ))}
+          </div>
+
+          <div className="inline-flex items-center gap-1">
+            <button
+              onClick={() => setDate(shiftDate(date, period, -1))}
+              className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              aria-label="Période précédente"
+            >
+              ◀
+            </button>
+            <input
+              type="date"
+              value={date}
+              max={todayIso()}
+              onChange={(e) => setDate(e.target.value || todayIso())}
+              className="rounded border border-zinc-200 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+            />
+            <button
+              onClick={() => setDate(shiftDate(date, period, 1))}
+              disabled={isToday}
+              className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              aria-label="Période suivante"
+            >
+              ▶
+            </button>
+          </div>
+
+          <button
+            onClick={() => setDate(todayIso())}
+            disabled={isToday}
+            className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-30 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            Aujourd&apos;hui
+          </button>
+
+          {data && (
+            <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">
+              {data.label}
+            </span>
+          )}
+        </section>
+
         {loading && <p className="text-sm text-zinc-500">Chargement…</p>}
         {error && (
           <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
@@ -50,28 +148,68 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {data && (
+        {data && !loading && (
           <>
-            {/* KPIs aujourd'hui */}
+            {/* KPIs sur la fenêtre choisie */}
             <section>
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Aujourd&apos;hui
+                {PERIOD_LABEL[data.period]} — {data.label}
               </h2>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
-                <Kpi label="Messages" today={data.kpis.today.messages} yesterday={data.kpis.yesterday.messages} />
-                <Kpi label="Urgents" today={data.kpis.today.urgent} yesterday={data.kpis.yesterday.urgent} accent="urgent" />
-                <Kpi label="Hautes" today={data.kpis.today.high} yesterday={data.kpis.yesterday.high} accent="high" />
-                <Kpi label="Incidents" today={data.kpis.today.incidents} yesterday={data.kpis.yesterday.incidents} accent="urgent" />
-                <Kpi label="Demandes action" today={data.kpis.today.demande_action} yesterday={data.kpis.yesterday.demande_action} accent="high" />
-                <Kpi label="Actions requises" today={data.kpis.today.action_required} yesterday={data.kpis.yesterday.action_required} accent="action" />
-                <Kpi label="Livraisons" today={data.kpis.today.livraisons} yesterday={data.kpis.yesterday.livraisons} />
+                <Kpi
+                  label="Messages"
+                  current={data.kpis.current.messages}
+                  previous={data.kpis.previous.messages}
+                  prevLabel={PREV_LABEL[data.period]}
+                />
+                <Kpi
+                  label="Urgents"
+                  current={data.kpis.current.urgent}
+                  previous={data.kpis.previous.urgent}
+                  prevLabel={PREV_LABEL[data.period]}
+                  accent="urgent"
+                />
+                <Kpi
+                  label="Hautes"
+                  current={data.kpis.current.high}
+                  previous={data.kpis.previous.high}
+                  prevLabel={PREV_LABEL[data.period]}
+                  accent="high"
+                />
+                <Kpi
+                  label="Incidents"
+                  current={data.kpis.current.incidents}
+                  previous={data.kpis.previous.incidents}
+                  prevLabel={PREV_LABEL[data.period]}
+                  accent="urgent"
+                />
+                <Kpi
+                  label="Demandes action"
+                  current={data.kpis.current.demande_action}
+                  previous={data.kpis.previous.demande_action}
+                  prevLabel={PREV_LABEL[data.period]}
+                  accent="high"
+                />
+                <Kpi
+                  label="Actions requises"
+                  current={data.kpis.current.action_required}
+                  previous={data.kpis.previous.action_required}
+                  prevLabel={PREV_LABEL[data.period]}
+                  accent="action"
+                />
+                <Kpi
+                  label="Livraisons"
+                  current={data.kpis.current.livraisons}
+                  previous={data.kpis.previous.livraisons}
+                  prevLabel={PREV_LABEL[data.period]}
+                />
               </div>
             </section>
 
             {/* Urgent items */}
             <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Points d&apos;attention (7 jours)
+                Points d&apos;attention ({PERIOD_LABEL[data.period].toLowerCase()})
               </h2>
               {data.urgent_items.length === 0 ? (
                 <p className="text-sm text-zinc-500">Rien d&apos;urgent à signaler.</p>
@@ -117,12 +255,12 @@ export default function DashboardPage() {
 
             {/* Trois colonnes : catégories, priorités, sites */}
             <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <Block title="Catégories (7 j)">
+              <Block title="Catégories (30 j)">
                 <BarList
                   items={data.categories.map((c) => ({ label: c.category, count: c.count }))}
                 />
               </Block>
-              <Block title="Priorités (7 j)">
+              <Block title="Priorités (30 j)">
                 <BarList
                   items={data.priorities.map((p) => ({
                     label: PRIORITY_LABELS[p.priority] || p.priority,
@@ -131,7 +269,7 @@ export default function DashboardPage() {
                   }))}
                 />
               </Block>
-              <Block title="Sites mentionnés (7 j)">
+              <Block title="Sites mentionnés (30 j)">
                 {data.top_sites.length === 0 ? (
                   <p className="text-xs text-zinc-500">
                     Aucun site nommément identifié.
@@ -147,7 +285,7 @@ export default function DashboardPage() {
             {/* Top senders */}
             <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Plus actifs (7 j)
+                Plus actifs (30 j)
               </h2>
               <div className="flex flex-wrap gap-2">
                 {data.top_senders.map((s) => (
@@ -169,16 +307,18 @@ export default function DashboardPage() {
 
 function Kpi({
   label,
-  today,
-  yesterday,
+  current,
+  previous,
+  prevLabel,
   accent,
 }: {
   label: string;
-  today: number;
-  yesterday: number;
+  current: number;
+  previous: number;
+  prevLabel: string;
   accent?: "urgent" | "high" | "action";
 }) {
-  const delta = today - yesterday;
+  const delta = current - previous;
   const accentClass =
     accent === "urgent"
       ? "text-red-700 dark:text-red-400"
@@ -191,9 +331,9 @@ function Kpi({
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="text-xs text-zinc-500 dark:text-zinc-400">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${accentClass}`}>{today}</div>
+      <div className={`mt-1 text-2xl font-semibold ${accentClass}`}>{current}</div>
       <div className="mt-0.5 text-[11px] text-zinc-400">
-        hier : {yesterday}{" "}
+        {prevLabel} : {previous}{" "}
         {delta !== 0 && (
           <span className={delta > 0 ? "text-emerald-600" : "text-zinc-500"}>
             ({delta > 0 ? "+" : ""}

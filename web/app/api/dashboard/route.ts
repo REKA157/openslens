@@ -39,8 +39,15 @@ function describeError(err: unknown): Record<string, unknown> {
   return out;
 }
 
-export async function GET() {
-  const targetUrl = `${BACKEND_URL}/api/dashboard`;
+export async function GET(req: Request) {
+  const incoming = new URL(req.url);
+  const qs = new URLSearchParams();
+  const d = incoming.searchParams.get("date");
+  const p = incoming.searchParams.get("period");
+  if (d) qs.set("date", d);
+  if (p) qs.set("period", p);
+  const targetUrl =
+    `${BACKEND_URL}/api/dashboard` + (qs.toString() ? `?${qs.toString()}` : "");
   try {
     const r = await undiciFetch(targetUrl, {
       dispatcher: insecureDispatcher,

@@ -8,8 +8,16 @@
  *  - même comportement en local dev et en prod Vercel
  */
 
-export async function fetchDashboard(): Promise<DashboardData> {
-  const r = await fetch(`/api/dashboard`, {
+export type DashboardPeriod = "day" | "week" | "month";
+
+export async function fetchDashboard(
+  date?: string,
+  period: DashboardPeriod = "day",
+): Promise<DashboardData> {
+  const qs = new URLSearchParams();
+  if (date) qs.set("date", date);
+  qs.set("period", period);
+  const r = await fetch(`/api/dashboard?${qs.toString()}`, {
     method: "GET",
     cache: "no-store",
   });
@@ -63,9 +71,15 @@ export type UrgentItem = {
   raw_text: string;
 };
 
+export type DashboardWindow = { start: string; end: string };
+
 export type DashboardData = {
   generated_at: string;
-  kpis: { today: DashboardKPIs; yesterday: DashboardKPIs };
+  period: DashboardPeriod;
+  label: string;
+  current_window: DashboardWindow;
+  previous_window: DashboardWindow;
+  kpis: { current: DashboardKPIs; previous: DashboardKPIs };
   categories: { category: string; count: number }[];
   priorities: { priority: string; count: number }[];
   top_sites: { site: string; count: number }[];
