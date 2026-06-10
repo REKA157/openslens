@@ -199,11 +199,6 @@ export default function ForecastPage() {
             <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
               Prévisions de volume
             </h1>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              Modèle SARIMAX (statsmodels) entraîné par site sur 10 mois
-              d&apos;historique. Saisonnalité hebdomadaire. Intervalles de
-              confiance à 80%.
-            </p>
             {data && (
               <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                 Réf. {data.ref_date} · {data.modelled_count}/{data.sites_count} sites
@@ -236,7 +231,7 @@ export default function ForecastPage() {
 
         {loading && (
           <p className="text-sm text-zinc-500">
-            Entraînement des modèles SARIMAX (5-15 sec)…
+            Calcul des prévisions par site (5-15 sec)…
           </p>
         )}
 
@@ -460,8 +455,8 @@ function SiteForecastCard({ site }: { site: SiteForecastModel }) {
 
       <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-zinc-500">
         <Legend cls="bg-zinc-500" label="Historique observé" />
-        <Legend cls="bg-blue-500" label="Prédiction SARIMAX" />
-        <Legend cls="bg-blue-200 dark:bg-blue-900" label="Intervalle 80%" />
+        <Legend cls="bg-blue-500" label="Prévision" />
+        <Legend cls="bg-blue-200 dark:bg-blue-900" label="Intervalle de confiance 80%" />
       </div>
     </section>
   );

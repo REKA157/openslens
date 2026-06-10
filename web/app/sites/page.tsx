@@ -194,7 +194,7 @@ export default function SitesPage() {
               disabled={discovering}
               className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
-              {discovering ? "Découverte (30-45 s)…" : "Découvrir avec Claude"}
+              {discovering ? "Découverte (30-45 s)…" : "Lancer la découverte automatique"}
             </button>
             <button
               onClick={addEmpty}
@@ -223,12 +223,12 @@ export default function SitesPage() {
           </div>
         )}
 
-        {/* Proposition Claude */}
+        {/* Proposition automatique */}
         {proposal && discoverStats && (
           <section className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-400">
-                Proposition Claude
+                Proposition automatique
               </h2>
               <div className="text-xs text-zinc-600 dark:text-zinc-400">
                 {discoverStats.classifications} classifs scannées ·{" "}
@@ -362,8 +362,8 @@ export default function SitesPage() {
 
           {sites.length === 0 && !loading && (
             <p className="px-4 py-6 text-sm text-zinc-500">
-              Aucun site enregistré. Clique sur &ldquo;Découvrir avec Claude&rdquo;
-              pour obtenir une proposition.
+              Aucun site enregistré. Clique sur &ldquo;Lancer la découverte
+              automatique&rdquo; pour obtenir une proposition.
             </p>
           )}
 

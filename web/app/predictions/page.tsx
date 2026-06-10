@@ -115,8 +115,8 @@ export default function PredictionsPage() {
               Aide à la décision
             </h1>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              Statistiques descriptives + analyse experte par Claude Sonnet.
-              Pour les vraies prévisions de volume, voir{" "}
+              Statistiques opérationnelles et analyse experte.
+              Pour les prévisions de volume, voir{" "}
               <Link
                 href="/forecast"
                 className="font-medium underline hover:text-zinc-700 dark:hover:text-zinc-300"
@@ -137,7 +137,7 @@ export default function PredictionsPage() {
             onClick={handleGenerateInsights}
             disabled={generating || loading || !data}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-            title="Analyse experte croisant signaux statistiques et messages réels (~0,08 $)"
+            title="Analyse experte croisant signaux statistiques et messages réels"
           >
             {generating
               ? `Diagnostic en cours… ${progressSec != null ? `(${Math.round(progressSec)}s)` : ""}`
