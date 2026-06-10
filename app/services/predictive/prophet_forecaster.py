@@ -1,52 +1,48 @@
 """
-Prévision de volume par site avec Prophet (Meta).
+Prévision de volume par site avec SARIMAX (statsmodels).
 
-Pour chaque site canonique :
-  1. Aggrège l'historique en compte journalier des messages mentionnant le site
-  2. Construit un DataFrame Prophet (ds, y)
-  3. Ajoute saisonnalité mensuelle + jours fériés français
-  4. Entraîne le modèle (~5-15 sec par site)
-  5. Prédit horizon J+H avec intervalles de confiance (yhat_lower, yhat_upper)
+SARIMAX = Seasonal AutoRegressive Integrated Moving Average with eXogenous variables.
+Modèle de séries temporelles classique, statistiquement fondé, sans compilation
+native (contrairement à Prophet qui requiert CmdStan).
 
-Différences vs notre forecast actuel (moyenne mobile par jour-semaine) :
-  - Capte saisonnalité multi-niveaux (semaine + mois + vacances)
-  - Intègre jours fériés FR + vacances scolaires IDF
-  - Intervalles de confiance Bayésiens (vs sigma simple)
-  - Modèle robuste aux outliers (mode additif avec changepoints)
+Paramètres choisis :
+  - order=(1,1,1) : AR(1) sur série stationnarisée (1 différenciation) + MA(1)
+  - seasonal_order=(1,1,1,7) : composante saisonnière hebdomadaire
+  - Intervalles à 80%
 
-Mise en cache : les modèles entraînés sont cachés en mémoire pour 1h.
-Si l'historique change peu, on évite de re-entraîner à chaque requête.
+On garde le nom du module `prophet_forecaster` pour compat avec l'historique
+mais le moteur est désormais statsmodels.
+
+Sortie compatible avec l'ancien format Prophet pour ne pas casser le frontend.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import warnings
 from collections import defaultdict
 from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Any
 
-import holidays
+import numpy as np
 import pandas as pd
-from prophet import Prophet
 
-from app.routes.sites import site_alias_match
+# Statsmodels émet beaucoup de warnings de convergence sur petits volumes :
+# on les coupe ici plutôt que polluer les logs Coolify.
+warnings.filterwarnings("ignore", category=UserWarning, module="statsmodels")
+warnings.filterwarnings("ignore", message=".*ConvergenceWarning.*")
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX  # noqa: E402
+
+from app.routes.sites import site_alias_match  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
-# Cache en mémoire : {site_id: (trained_at_unix, last_training_date, Prophet model)}
-_MODEL_CACHE: dict[str, tuple[float, date_cls, Prophet]] = {}
+# Cache mémoire : {site_id: (fitted_at_unix, last_history_date, fitted_model)}
+_MODEL_CACHE: dict[str, tuple[float, date_cls, Any]] = {}
 _CACHE_TTL_SECONDS = 3600  # 1h
-
-
-def _build_holidays_df(min_year: int, max_year: int) -> pd.DataFrame:
-    """Holidays FR (jours fériés nationaux) sur la période concernée."""
-    fr = holidays.France(years=range(min_year, max_year + 2))
-    rows = []
-    for d, name in sorted(fr.items()):
-        rows.append({"ds": pd.Timestamp(d), "holiday": name.replace(" ", "_")})
-    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ds", "holiday"])
 
 
 def _aggregate_site_history(
@@ -55,8 +51,9 @@ def _aggregate_site_history(
     site: dict,
 ) -> pd.DataFrame:
     """
-    Compte journalier des messages liés à ce site (via entities.sites de la classif).
-    Retourne DataFrame Prophet-ready : colonnes ds (date), y (count).
+    Compte journalier des messages liés à ce site (via entities.sites).
+    Retourne DataFrame avec colonnes ds (date), y (count). Série continue
+    (jours sans message remplis à 0).
     """
     aliases = site.get("aliases") or []
     if not aliases:
@@ -78,7 +75,6 @@ def _aggregate_site_history(
     if not daily_count:
         return pd.DataFrame(columns=["ds", "y"])
 
-    # Remplit les jours sans message à 0 (Prophet préfère une série continue)
     min_d = min(daily_count.keys())
     max_d = max(daily_count.keys())
     rows = []
@@ -89,56 +85,54 @@ def _aggregate_site_history(
     return pd.DataFrame(rows)
 
 
-def train_forecaster(
-    history_df: pd.DataFrame,
-    holidays_df: pd.DataFrame | None = None,
-) -> Prophet:
-    """Entraîne Prophet sur une série journalière (au moins 30 jours)."""
-    model = Prophet(
-        weekly_seasonality=True,
-        yearly_seasonality=False,  # on n'a que 10 mois, pas d'année complète
-        daily_seasonality=False,
-        seasonality_mode="additive",
-        changepoint_prior_scale=0.05,  # un peu rigide, évite le overfit
-        interval_width=0.8,            # intervalles à 80%
-        holidays=holidays_df if holidays_df is not None and len(holidays_df) > 0 else None,
+def train_forecaster(history_df: pd.DataFrame) -> Any:
+    """
+    Entraîne SARIMAX sur la série journalière. Modèle SARIMAX(1,1,1)x(1,1,1,7) :
+    AR(1) + I(1) + MA(1) avec saisonnalité hebdomadaire SAR(1)+SI(1)+SMA(1).
+    """
+    series = pd.Series(
+        history_df["y"].values,
+        index=pd.DatetimeIndex(history_df["ds"], freq="D"),
+        dtype=float,
     )
-    # Saisonnalité mensuelle (capture cycles paye / fin de mois)
-    model.add_seasonality(name="monthly", period=30.5, fourier_order=3)
-    model.fit(history_df)
-    return model
+    model = SARIMAX(
+        series,
+        order=(1, 1, 1),
+        seasonal_order=(1, 1, 1, 7),
+        enforce_stationarity=False,
+        enforce_invertibility=False,
+    )
+    fitted = model.fit(disp=False, maxiter=100)
+    return fitted
 
 
 def predict_horizon(
-    model: Prophet,
+    fitted: Any,
     last_history_date: date_cls,
     horizon_days: int = 30,
 ) -> list[dict[str, Any]]:
     """
-    Prédit les `horizon_days` à venir après `last_history_date`.
-    Retourne liste de dicts avec ds, yhat, yhat_lower, yhat_upper.
+    Prédit `horizon_days` à partir de last_history_date.
+    Retourne liste de dicts {date, yhat, yhat_lower, yhat_upper}.
     """
-    future_dates = pd.DataFrame({
-        "ds": pd.date_range(
-            start=pd.Timestamp(last_history_date) + pd.Timedelta(days=1),
-            periods=horizon_days,
-            freq="D",
-        )
-    })
-    forecast = model.predict(future_dates)
-    # On clipp les négatifs (Prophet peut prédire en négatif sur counts)
-    forecast["yhat"] = forecast["yhat"].clip(lower=0)
-    forecast["yhat_lower"] = forecast["yhat_lower"].clip(lower=0)
-    forecast["yhat_upper"] = forecast["yhat_upper"].clip(lower=0)
-    return [
-        {
-            "date": row["ds"].date().isoformat(),
-            "yhat": round(float(row["yhat"]), 1),
-            "yhat_lower": round(float(row["yhat_lower"]), 1),
-            "yhat_upper": round(float(row["yhat_upper"]), 1),
-        }
-        for _, row in forecast.iterrows()
-    ]
+    forecast = fitted.get_forecast(steps=horizon_days)
+    mean = forecast.predicted_mean
+    ci = forecast.conf_int(alpha=0.2)  # intervalle à 80%
+    lower_col, upper_col = ci.columns[0], ci.columns[1]
+
+    out: list[dict[str, Any]] = []
+    for i in range(horizon_days):
+        d = last_history_date + timedelta(days=i + 1)
+        yhat = max(0.0, float(mean.iloc[i]))
+        lo = max(0.0, float(ci.iloc[i][lower_col]))
+        up = max(0.0, float(ci.iloc[i][upper_col]))
+        out.append({
+            "date": d.isoformat(),
+            "yhat": round(yhat, 1),
+            "yhat_lower": round(lo, 1),
+            "yhat_upper": round(up, 1),
+        })
+    return out
 
 
 def forecast_site(
@@ -150,11 +144,8 @@ def forecast_site(
     history_tail_days: int | None = 90,
 ) -> dict[str, Any] | None:
     """
-    Wrapper haut niveau : agrège l'historique du site, entraîne Prophet (avec cache),
-    prédit horizon. Renvoie None si pas assez de données (< 30 jours d'historique).
-
-    `history_tail_days` : si donné, on ne retourne que la fin de l'historique
-    pour l'affichage frontend (réduit le payload).
+    Entraîne SARIMAX si nécessaire, prédit horizon, renvoie format compatible
+    avec l'ancien Prophet (frontend inchangé).
     """
     site_id = site["id"]
     history_df = _aggregate_site_history(messages, classifications_by_id, site)
@@ -164,43 +155,32 @@ def forecast_site(
 
     last_date = history_df["ds"].max().date()
 
-    # Cache check
     cached = _MODEL_CACHE.get(site_id)
     now = time.time()
     if cached and (now - cached[0]) < _CACHE_TTL_SECONDS and cached[1] == last_date:
-        model = cached[2]
-        logger.info("Prophet cache hit pour site %s", site_id)
+        fitted = cached[2]
+        logger.info("SARIMAX cache hit pour site %s", site_id)
     else:
-        # Pas de try/except ici — on laisse remonter pour exposer la cause.
-        holidays_df = _build_holidays_df(
-            history_df["ds"].min().year,
-            last_date.year + 1,
-        )
         t0 = time.time()
-        model = train_forecaster(history_df, holidays_df=holidays_df)
+        fitted = train_forecaster(history_df)
         elapsed = time.time() - t0
         logger.info(
-            "Prophet entraîné pour site %s (%d points, %.1fs)",
+            "SARIMAX entraîné pour site %s (%d points, %.1fs)",
             site_id, len(history_df), elapsed,
         )
-        _MODEL_CACHE[site_id] = (now, last_date, model)
+        _MODEL_CACHE[site_id] = (now, last_date, fitted)
 
-    predictions = predict_horizon(model, last_date, horizon_days=horizon_days)
+    predictions = predict_horizon(fitted, last_date, horizon_days=horizon_days)
 
-    # Historique : on garde uniquement la queue pour l'affichage frontend
     if history_tail_days is not None:
         cutoff = last_date - timedelta(days=history_tail_days)
         history_df = history_df[history_df["ds"].dt.date >= cutoff]
 
     history_out = [
-        {
-            "date": row["ds"].date().isoformat(),
-            "actual": int(row["y"]),
-        }
+        {"date": row["ds"].date().isoformat(), "actual": int(row["y"])}
         for _, row in history_df.iterrows()
     ]
 
-    # Agrégats utiles
     total_expected = sum(p["yhat"] for p in predictions)
     total_lower = sum(p["yhat_lower"] for p in predictions)
     total_upper = sum(p["yhat_upper"] for p in predictions)
@@ -224,7 +204,6 @@ def forecast_site(
 
 
 def _detect_trend(predictions: list[dict[str, Any]]) -> str:
-    """Détecte la tendance de la prédiction : haussière / baissière / stable."""
     if len(predictions) < 7:
         return "stable"
     first_week = sum(p["yhat"] for p in predictions[:7])

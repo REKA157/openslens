@@ -62,9 +62,9 @@ export default function ForecastPage() {
               Prévisions de volume
             </h1>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              Modèle Prophet (Meta) entraîné par site sur 10 mois d&apos;historique.
-              Intègre saisonnalité hebdo/mensuelle et jours fériés français.
-              Intervalles de confiance à 80%.
+              Modèle SARIMAX (statsmodels) entraîné par site sur 10 mois
+              d&apos;historique. Saisonnalité hebdomadaire. Intervalles de
+              confiance à 80%.
             </p>
             {data && (
               <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
