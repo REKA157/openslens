@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v34: forecast debug endpoint to diagnose why 0 sites modelled
+# v35: expose Prophet errors per site (was silenced before)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

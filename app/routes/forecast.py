@@ -48,6 +48,7 @@ async def forecast(
             raise HTTPException(404, detail="Site introuvable")
 
     results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     for site in sites:
         try:
             r = prophet_forecaster.forecast_site(
@@ -57,10 +58,24 @@ async def forecast(
             )
             if r is not None:
                 results.append(r)
+            else:
+                errors.append({
+                    "site_id": site["id"],
+                    "site_name": site["canonical_name"],
+                    "reason": "Pas assez d'historique (<30 jours).",
+                })
         except Exception as exc:  # noqa: BLE001
+            import traceback
+            tb = traceback.format_exc().splitlines()
             logger.exception(
                 "Forecast Prophet échoué pour %s : %s", site.get("canonical_name"), exc,
             )
+            errors.append({
+                "site_id": site["id"],
+                "site_name": site["canonical_name"],
+                "reason": f"{type(exc).__name__}: {exc}",
+                "traceback_tail": tb[-3:],
+            })
 
     for m in messages:
         m.pop("_parsed_ts", None)
@@ -74,6 +89,7 @@ async def forecast(
         "modelled_count": len(results),
         "messages_scanned": len(messages),
         "sites": results,
+        "errors": errors,
     }
 
 

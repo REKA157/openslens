@@ -171,22 +171,19 @@ def forecast_site(
         model = cached[2]
         logger.info("Prophet cache hit pour site %s", site_id)
     else:
-        try:
-            holidays_df = _build_holidays_df(
-                history_df["ds"].min().year,
-                last_date.year + 1,
-            )
-            t0 = time.time()
-            model = train_forecaster(history_df, holidays_df=holidays_df)
-            elapsed = time.time() - t0
-            logger.info(
-                "Prophet entraîné pour site %s (%d points, %.1fs)",
-                site_id, len(history_df), elapsed,
-            )
-            _MODEL_CACHE[site_id] = (now, last_date, model)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Prophet a échoué pour site %s : %s", site_id, exc)
-            return None
+        # Pas de try/except ici — on laisse remonter pour exposer la cause.
+        holidays_df = _build_holidays_df(
+            history_df["ds"].min().year,
+            last_date.year + 1,
+        )
+        t0 = time.time()
+        model = train_forecaster(history_df, holidays_df=holidays_df)
+        elapsed = time.time() - t0
+        logger.info(
+            "Prophet entraîné pour site %s (%d points, %.1fs)",
+            site_id, len(history_df), elapsed,
+        )
+        _MODEL_CACHE[site_id] = (now, last_date, model)
 
     predictions = predict_horizon(model, last_date, horizon_days=horizon_days)
 
