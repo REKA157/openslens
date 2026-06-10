@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v18: WhatsApp export import endpoint + python-multipart dep
+# v19: import-export dedup + row-by-row fallback when batch fails
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

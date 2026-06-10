@@ -229,7 +229,13 @@ async def import_whatsapp_export(
         "errors": 0,
     }
 
+    # Dédoublonnage global : un même external_message_id ne doit apparaître
+    # qu'une seule fois dans le batch envoyé à PostgREST (sinon erreur
+    # "ON CONFLICT DO UPDATE command cannot affect row a second time").
+    # On garde la première occurrence.
+    seen_ids: set[str] = set()
     rows: list[dict] = []
+    duplicates_in_export = 0
     for parsed in import_export.parse_export(text):
         stats["parsed"] += 1
         row = import_export.to_db_row(
@@ -240,12 +246,22 @@ async def import_whatsapp_export(
         if row is None:
             stats["skipped_system"] += 1
             continue
+        mid = row["external_message_id"]
+        if mid in seen_ids:
+            duplicates_in_export += 1
+            continue
+        seen_ids.add(mid)
         rows.append(row)
 
+    stats["duplicates_in_export"] = duplicates_in_export
     stats["rows_to_store"] = len(rows)
 
-    # Upsert en batch de 100 pour limiter la taille des requêtes PostgREST.
+    # Upsert en batch de 100. Si un batch entier échoue (ex. payload trop gros,
+    # ligne avec caractère invalide…), on retombe sur un upsert ligne par
+    # ligne pour identifier précisément ce qui pose problème et stocker tout
+    # le reste.
     BATCH_SIZE = 100
+    sample_errors: list[str] = []
     for i in range(0, len(rows), BATCH_SIZE):
         batch = rows[i : i + BATCH_SIZE]
         try:
@@ -258,9 +274,36 @@ async def import_whatsapp_export(
                 .execute()
             )
             stats["stored"] += len(res.data or [])
+            continue
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Batch %d upsert failed: %s", i // BATCH_SIZE, exc)
-            stats["errors"] += len(batch)
+            logger.warning(
+                "Batch %d failed (%s), retrying row by row",
+                i // BATCH_SIZE, exc,
+            )
 
+        # Fallback : upsert ligne par ligne pour ne pas perdre tout le batch
+        for row in batch:
+            try:
+                res = (
+                    sb.table("whatsapp_messages")
+                    .upsert(
+                        [row],
+                        on_conflict="company_id,group_id,external_message_id",
+                    )
+                    .execute()
+                )
+                stats["stored"] += len(res.data or [])
+            except Exception as exc:  # noqa: BLE001
+                stats["errors"] += 1
+                if len(sample_errors) < 5:
+                    sample_errors.append(
+                        f"{row['external_message_id']}: {type(exc).__name__}: {exc!s}[:200]"
+                    )
+                logger.exception(
+                    "Row upsert failed for %s: %s",
+                    row["external_message_id"], exc,
+                )
+
+    stats["sample_errors"] = sample_errors
     logger.info("Import export terminé: %s", stats)
     return stats
