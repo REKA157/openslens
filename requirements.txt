@@ -8,5 +8,7 @@ python-multipart==0.0.12
 tzdata==2024.2
 anthropic==0.39.0
 openai==1.54.0
-prophet==1.1.5
+prophet==1.1.6
 holidays==0.59
+# Prophet 1.1.6 supporte NumPy 2 mais on pin pour stabilité
+numpy<2.1

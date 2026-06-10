@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v32: Phase 1 prédictif — Prophet forecast (build essentials added for Stan)
+# v33: fix Prophet 1.1.5→1.1.6 (NumPy 2.0 compat)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
