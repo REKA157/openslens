@@ -122,7 +122,7 @@ def gather_context_per_site(
     ref_date: date_cls,
     *,
     days_back: int = 14,
-    max_per_site: int = 15,
+    max_per_site: int = 10,
 ) -> dict[str, dict[str, Any]]:
     """
     Pour chaque site, récupère les N derniers messages classifiés des
@@ -222,11 +222,14 @@ async def generate_insights(
     ]
     user_content = "\n".join(user_content_parts)
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(
+        api_key=settings.anthropic_api_key,
+        timeout=120.0,  # ne pas hériter du timeout default httpx (30s) qui couperait Sonnet
+    )
     try:
         response = await client.messages.create(
             model=INSIGHT_MODEL,
-            max_tokens=4096,
+            max_tokens=3072,
             system=[
                 {
                     "type": "text",

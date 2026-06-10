@@ -8,7 +8,8 @@ import { Agent, fetch as undiciFetch } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Vercel Pro plan supporte jusqu'à 300s. Sonnet prend 15-30s, load corpus 5-8s.
+export const maxDuration = 300;
 
 const BACKEND_URL =
   process.env.BACKEND_URL ||

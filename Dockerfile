@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v28: cross qual/quant insights via Sonnet (/api/predictions/insights)
+# v29: insights perf — 10 msg/site, max_tokens 3072, explicit anthropic timeout
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
