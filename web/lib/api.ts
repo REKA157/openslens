@@ -298,6 +298,63 @@ export async function generatePredictionsInsights(
   return r.json();
 }
 
+// --- Async mode (contourne le cap 60s de Vercel) ---
+
+export type JobStatus = {
+  job_id: string;
+  status: "pending" | "running" | "done" | "failed";
+  elapsed_seconds?: number;
+  result?: PredictionsInsightsData;
+  error?: string;
+};
+
+async function startPredictionsInsightsJob(): Promise<{ job_id: string }> {
+  const r = await fetch(`/api/predictions/insights/start`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Démarrage diagnostic ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
+async function pollPredictionsInsightsJob(jobId: string): Promise<JobStatus> {
+  const r = await fetch(
+    `/api/predictions/insights/status?job_id=${encodeURIComponent(jobId)}`,
+    { method: "GET", cache: "no-store" },
+  );
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Statut diagnostic ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
+export async function generatePredictionsInsightsAsync(
+  onProgress?: (elapsed: number) => void,
+): Promise<PredictionsInsightsData> {
+  const { job_id } = await startPredictionsInsightsJob();
+  const POLL_INTERVAL_MS = 3000;
+  const MAX_WAIT_MS = 180_000; // 3 min safety
+  const start = Date.now();
+  while (Date.now() - start < MAX_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const status = await pollPredictionsInsightsJob(job_id);
+    if (onProgress && status.elapsed_seconds != null) {
+      onProgress(status.elapsed_seconds);
+    }
+    if (status.status === "done" && status.result) {
+      return status.result;
+    }
+    if (status.status === "failed") {
+      throw new Error(status.error || "Diagnostic échoué");
+    }
+  }
+  throw new Error("Timeout client : le diagnostic prend plus de 3 min");
+}
+
 export type DiscoverProposal = {
   sites: {
     canonical_name: string;

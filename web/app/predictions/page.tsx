@@ -17,7 +17,7 @@ import {
   SiteForecast,
   SiteTrend,
   fetchPredictions,
-  generatePredictionsInsights,
+  generatePredictionsInsightsAsync,
 } from "@/lib/api";
 
 const SEVERITY_STYLES: Record<
@@ -61,6 +61,7 @@ export default function PredictionsPage() {
   const [insights, setInsights] = useState<AiInsights | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [progressSec, setProgressSec] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -88,15 +89,19 @@ export default function PredictionsPage() {
 
   async function handleGenerateInsights() {
     setGenerating(true);
+    setProgressSec(0);
     setError(null);
     try {
-      const enriched = await generatePredictionsInsights();
+      const enriched = await generatePredictionsInsightsAsync((elapsed) => {
+        setProgressSec(elapsed);
+      });
       setData(enriched);
       setInsights(enriched.insights);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setGenerating(false);
+      setProgressSec(null);
     }
   }
 
@@ -124,7 +129,7 @@ export default function PredictionsPage() {
             title="Analyse experte croisant signaux statistiques et messages réels (~0,08 $)"
           >
             {generating
-              ? "Diagnostic en cours (15-30 s)…"
+              ? `Diagnostic en cours… ${progressSec != null ? `(${Math.round(progressSec)}s)` : ""}`
               : insights
                 ? "Relancer le diagnostic prédictif"
                 : "Lancer le diagnostic prédictif"}

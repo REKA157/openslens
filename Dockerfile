@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v29: insights perf — 10 msg/site, max_tokens 3072, explicit anthropic timeout
+# v30: diagnostic prédictif en mode async (start+poll) — fix Vercel cap 60s
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
