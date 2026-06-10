@@ -1,24 +1,24 @@
 """
-Endpoint admin pour charger l'historique du groupe pilote depuis WAHA.
+Endpoint admin pour charger l'historique du groupe pilote.
 
-Usage :
-  curl -X POST https://api.opslens.../admin/backfill \
-       -H "X-Admin-Token: <token>" \
-       -H "Content-Type: application/json" \
-       -d '{"limit": 500}'
+- /admin/backfill        : récupère l'historique récent depuis WAHA
+- /admin/reclassify      : (re)classe IA les messages texte existants
+- /admin/waha-watchdog   : vérifie/redémarre la session WAHA
+- /admin/import-export   : importe un export WhatsApp natif (.txt)
 
-À lancer une seule fois (idempotent grâce à l'upsert).
+À lancer manuellement (idempotents grâce aux upserts).
 """
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.db import get_supabase
-from app.services import ingest
+from app.services import import_export, ingest
 from app.services.ai import classify as classify_service
+from app.services.groups import get_or_create_pilot_group_id
 from app.waha import WahaClient
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -188,3 +188,79 @@ async def waha_watchdog(
         return result
     finally:
         await waha.aclose()
+
+
+@router.post("/import-export")
+async def import_whatsapp_export(
+    file: UploadFile = File(..., description="Fichier _chat.txt export WhatsApp"),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Importe un export WhatsApp natif (.txt) dans whatsapp_messages.
+    Idempotent : réimporter le même fichier ne crée pas de doublons (upsert
+    sur external_message_id déterministe).
+
+    Le fichier est fourni en multipart/form-data sous la clé `file`.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Certains exports sont en UTF-8 BOM ou latin-1 selon le téléphone
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="replace")
+
+    sb = get_supabase()
+    group_uuid = get_or_create_pilot_group_id()
+
+    stats = {
+        "filename": file.filename,
+        "size_bytes": len(raw),
+        "parsed": 0,
+        "skipped_system": 0,
+        "rows_to_store": 0,
+        "stored": 0,
+        "errors": 0,
+    }
+
+    rows: list[dict] = []
+    for parsed in import_export.parse_export(text):
+        stats["parsed"] += 1
+        row = import_export.to_db_row(
+            parsed,
+            company_id=settings.company_id,
+            group_uuid=group_uuid,
+        )
+        if row is None:
+            stats["skipped_system"] += 1
+            continue
+        rows.append(row)
+
+    stats["rows_to_store"] = len(rows)
+
+    # Upsert en batch de 100 pour limiter la taille des requêtes PostgREST.
+    BATCH_SIZE = 100
+    for i in range(0, len(rows), BATCH_SIZE):
+        batch = rows[i : i + BATCH_SIZE]
+        try:
+            res = (
+                sb.table("whatsapp_messages")
+                .upsert(
+                    batch,
+                    on_conflict="company_id,group_id,external_message_id",
+                )
+                .execute()
+            )
+            stats["stored"] += len(res.data or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Batch %d upsert failed: %s", i // BATCH_SIZE, exc)
+            stats["errors"] += len(batch)
+
+    logger.info("Import export terminé: %s", stats)
+    return stats

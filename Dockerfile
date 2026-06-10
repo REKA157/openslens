@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v17: weekly + monthly reports (period_type, unified /api/reports endpoints)
+# v18: WhatsApp export import endpoint + python-multipart dep
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
