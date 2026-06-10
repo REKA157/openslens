@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v21: reclassify-missing endpoint (anti-join, robust catch-up)
+# v22: sites canoniques (discover/save/list endpoints + sites table)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

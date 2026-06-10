@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import backfill, dashboard, health, reports, webhook
+from app.routes import backfill, dashboard, health, reports, sites, webhook
 
 # Logging basique — Coolify capture stdout/stderr
 logging.basicConfig(
@@ -39,3 +39,5 @@ app.include_router(backfill.router)
 app.include_router(dashboard.router)
 app.include_router(reports.admin_router)
 app.include_router(reports.api_router)
+app.include_router(sites.admin_router)
+app.include_router(sites.api_router)
