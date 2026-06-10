@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v16: dashboard date+period query params (day/week/month navigation)
+# v17: weekly + monthly reports (period_type, unified /api/reports endpoints)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

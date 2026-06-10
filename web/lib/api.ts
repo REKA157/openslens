@@ -25,57 +25,54 @@ export async function fetchDashboard(
   return r.json();
 }
 
-export async function fetchLatestDailyReport(): Promise<DailyReport | null> {
-  const r = await fetch(`/api/reports/daily/latest`, {
-    method: "GET",
-    cache: "no-store",
-  });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`Daily ${r.status}`);
-  return r.json();
-}
+export type ReportPeriod = "day" | "week" | "month";
 
-export async function fetchDailyReportByDate(
+export async function fetchReport(
+  period: ReportPeriod,
   date: string,
 ): Promise<DailyReport | null> {
-  const r = await fetch(`/api/reports/daily/${date}`, {
+  const qs = new URLSearchParams({ period, date });
+  const r = await fetch(`/api/reports?${qs.toString()}`, {
     method: "GET",
     cache: "no-store",
   });
   if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`Daily ${date} ${r.status}`);
+  if (!r.ok) throw new Error(`Report ${period}/${date} ${r.status}`);
   return r.json();
 }
 
-export type DailyReportSummary = {
+export type ReportSummary = {
   report_date: string;
+  period_end?: string;
   created_at: string;
+  stats?: { total_messages?: number } | null;
 };
 
-export async function fetchDailyReportsList(): Promise<DailyReportSummary[]> {
-  const r = await fetch(`/api/reports/daily`, {
+export async function fetchReportsList(
+  period: ReportPeriod,
+): Promise<ReportSummary[]> {
+  const r = await fetch(`/api/reports/list?period=${period}`, {
     method: "GET",
     cache: "no-store",
   });
-  if (!r.ok) throw new Error(`Daily list ${r.status}`);
-  const j = (await r.json()) as { reports: DailyReportSummary[] };
+  if (!r.ok) throw new Error(`Reports list ${period} ${r.status}`);
+  const j = (await r.json()) as { reports: ReportSummary[] };
   return j.reports || [];
 }
 
-export async function generateDailyReport(
+export async function generateReport(
+  period: ReportPeriod,
+  targetDate: string,
   force = false,
-  targetDate?: string,
 ): Promise<DailyReport> {
-  const body: Record<string, unknown> = { force };
-  if (targetDate) body.target_date = targetDate;
-  const r = await fetch(`/api/admin/generate-daily-report`, {
+  const r = await fetch(`/api/reports`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ period, target_date: targetDate, force }),
   });
   if (!r.ok) {
     const err = await r.text();
-    throw new Error(`Generate ${r.status}: ${err}`);
+    throw new Error(`Generate ${period} ${r.status}: ${err}`);
   }
   return r.json();
 }
@@ -131,8 +128,13 @@ export type DailyReportContent = {
 export type DailyReport = {
   id: string;
   report_date: string;
+  period_type?: ReportPeriod;
+  period_end?: string;
   content: DailyReportContent;
   stats: {
+    period_type?: ReportPeriod;
+    period_start?: string;
+    period_end?: string;
     total_messages: number;
     by_priority: Record<string, number>;
     by_category: Record<string, number>;

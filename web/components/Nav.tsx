@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabase";
 
 const TABS = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/daily", label: "Rapport du jour" },
+  { href: "/reports", label: "Rapports" },
   { href: "/messages", label: "Journal" },
 ];
 
