@@ -12,7 +12,7 @@ Endpoint admin pour charger l'historique du groupe pilote.
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -429,31 +429,37 @@ async def refresh_senders(
             break
         page += 1
 
-    def ts_utc_key(ts: str | datetime | None) -> str:
-        """
-        Clé robuste : convertit toujours en UTC, retourne 'YYYY-MM-DDTHH:MM:SS'.
-        Gère les offsets variables que Supabase renvoie selon ses settings projet.
-        """
+    def ts_utc_dt(ts: str | datetime | None) -> datetime | None:
+        """Convertit n'importe quel sent_at en datetime UTC."""
         if ts is None:
-            return ""
+            return None
         if isinstance(ts, str):
             try:
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             except (ValueError, TypeError):
-                return ts[:19]
+                return None
         else:
             dt = ts
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         else:
             dt = dt.astimezone(timezone.utc)
+        return dt
+
+    def fmt_sec(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-    # 2. Index (timestamp UTC à la seconde, début du raw_text) → [messages]
+    # 2. Index (ts UTC seconde, texte normalisé) → [messages]
+    # On normalise le texte avec import_export.normalize_for_match qui strippe
+    # les patterns « < pièce jointe : ... > » → résiste au changement de format
+    # entre export avec/sans médias.
     by_key: dict[tuple[str, str], list[dict]] = {}
     for m in existing:
-        ts_key = ts_utc_key(m.get("sent_at"))
-        txt_key = (m.get("raw_text") or "")[:80].strip()
+        dt = ts_utc_dt(m.get("sent_at"))
+        if dt is None:
+            continue
+        ts_key = fmt_sec(dt)
+        txt_key = import_export.normalize_for_match(m.get("raw_text"))
         by_key.setdefault((ts_key, txt_key), []).append(m)
 
     stats: dict[str, int | float | str] = {
@@ -485,31 +491,46 @@ async def refresh_senders(
             stats["skipped_system"] = int(stats["skipped_system"]) + 1
             continue
 
-        ts_key = ts_utc_key(parsed["dt"])
-        txt_key = (raw_text_eq or "")[:80].strip()
+        parsed_dt: datetime = parsed["dt"]
+        # Normalise le texte parsé avec la même fonction que pour le DB
+        txt_key = import_export.normalize_for_match(raw_text_eq)
 
         if len(debug_parsed_keys) < 5:
             debug_parsed_keys.append({
-                "ts": ts_key,
-                "txt_first_60": txt_key[:60],
+                "ts": fmt_sec(parsed_dt.astimezone(timezone.utc)),
+                "txt_first_25": txt_key,
                 "sender": new_sender,
             })
 
-        candidates = by_key.get((ts_key, txt_key), [])
+        # Recherche tolérante : on essaie ts exact, puis ±1, ±2, ±3 secondes
+        # (export WhatsApp peut décaler les timestamps d'1 sec entre 2 exports).
+        candidates: list[dict] = []
+        for delta_sec in (0, -1, 1, -2, 2, -3, 3):
+            alt_dt = parsed_dt + timedelta(seconds=delta_sec)
+            alt_key = (fmt_sec(alt_dt.astimezone(timezone.utc)), txt_key)
+            if alt_key in by_key:
+                candidates = by_key[alt_key]
+                break
 
         if not candidates:
             if len(debug_not_found_samples) < 5:
-                # Cherche les keys DB avec ce même timestamp pour comparer textes
-                same_ts = [
-                    {"db_txt_first_60": k[1][:60], "n": len(v)}
-                    for k, v in by_key.items()
-                    if k[0] == ts_key
-                ]
+                ts_exact = fmt_sec(parsed_dt.astimezone(timezone.utc))
+                # Cherche toutes les keys DB sur ±5 sec autour du ts parsé
+                nearby = []
+                for d in range(-5, 6):
+                    alt = fmt_sec((parsed_dt + timedelta(seconds=d)).astimezone(timezone.utc))
+                    for k in by_key:
+                        if k[0] == alt:
+                            nearby.append({
+                                "db_ts": k[0],
+                                "delta_sec": d,
+                                "db_txt": k[1][:30],
+                            })
                 debug_not_found_samples.append({
-                    "parsed_ts": ts_key,
-                    "parsed_txt_first_60": txt_key[:60],
+                    "parsed_ts": ts_exact,
+                    "parsed_txt": txt_key,
                     "parsed_sender": new_sender,
-                    "db_keys_at_same_ts": same_ts[:3],
+                    "db_nearby": nearby[:5],
                 })
             stats["not_found"] = int(stats["not_found"]) + 1
             continue

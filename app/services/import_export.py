@@ -50,7 +50,7 @@ _CONTROL_CHARS = (_LRM, _FSI, _PDI)
 
 # --- Détection média / système (français) ---
 
-# La phrase exacte est entourée d'U+200E. Le mapping accepte les variantes.
+# Format "exporté SANS médias" : « ‎image absente », « audio omis »...
 MEDIA_MARKERS: dict[str, str] = {
     "image absente": "image",
     "image omise": "image",
@@ -67,6 +67,35 @@ MEDIA_MARKERS: dict[str, str] = {
     "sticker omis": "sticker",
     "sticker absent": "sticker",
 }
+
+# Format "exporté AVEC médias" : « < pièce jointe : 00000007-PHOTO-...jpg > »
+# Le nom de fichier indique le type (PHOTO/VIDEO/AUDIO/STICKER/GIF).
+MEDIA_ATTACHMENT_RE = re.compile(
+    r"<\s*pi[èe]ce\s+jointe\s*:\s*([^>]+?)>",
+    re.IGNORECASE,
+)
+
+# Mapping nom de fichier → type canonique
+_ATTACHMENT_TYPE_HINTS: tuple[tuple[str, str], ...] = (
+    ("PHOTO", "image"),
+    ("IMG", "image"),
+    ("VIDEO", "video"),
+    ("VID", "video"),
+    ("AUDIO", "audio"),
+    ("PTT", "audio"),
+    ("STICKER", "sticker"),
+    ("GIF", "video"),
+    ("DOC", "document"),
+    ("PDF", "document"),
+    (".jpg", "image"),
+    (".jpeg", "image"),
+    (".png", "image"),
+    (".mp4", "video"),
+    (".mp3", "audio"),
+    (".opus", "audio"),
+    (".webp", "sticker"),
+)
+
 
 SYSTEM_FRAGMENTS = (
     "a créé ce groupe",
@@ -139,12 +168,39 @@ def _classify_type(text: str) -> tuple[str, str | None]:
         if fragment in text:
             return ("system", None)
 
+    # Export AVEC médias : « < pièce jointe : XXX-PHOTO-...jpg > »
+    m = MEDIA_ATTACHMENT_RE.search(text)
+    if m:
+        filename = m.group(1).strip()
+        mtype = "image"  # défaut
+        for hint, t in _ATTACHMENT_TYPE_HINTS:
+            if hint.lower() in filename.lower():
+                mtype = t
+                break
+        caption = MEDIA_ATTACHMENT_RE.sub("", text).strip(" \n\t-—:")
+        return (mtype, caption or None)
+
+    # Export SANS médias : « image absente », « audio omis »...
     for marker, mtype in MEDIA_MARKERS.items():
         if marker in text:
             caption = text.replace(marker, "").strip(" \n\t-—:")
             return (mtype, caption or None)
 
     return ("text", text)
+
+
+def normalize_for_match(raw_text: str | None) -> str:
+    """
+    Normalise un texte pour le matching cross-export robuste :
+    - Strip pattern « < pièce jointe : ... > » (export avec médias)
+    - Strip whitespace, lower
+    - Tronque à 25 chars (assez discriminant, robuste aux différences mineures)
+    """
+    if not raw_text:
+        return ""
+    s = MEDIA_ATTACHMENT_RE.sub("", raw_text)
+    s = " ".join(s.split())  # collapse whitespace
+    return s.strip().lower()[:25]
 
 
 def _normalize_sender(sender: str) -> str:

@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v25: fix refresh-senders timestamp matching (UTC normalization both sides)
+# v26: refresh-senders robust matching (±3s tolerance + media attachment patterns)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
