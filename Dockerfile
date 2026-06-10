@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v33: fix Prophet 1.1.5→1.1.6 (NumPy 2.0 compat)
+# v34: forecast debug endpoint to diagnose why 0 sites modelled
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

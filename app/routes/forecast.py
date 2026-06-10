@@ -75,3 +75,50 @@ async def forecast(
         "messages_scanned": len(messages),
         "sites": results,
     }
+
+
+@router.get("/forecast/debug")
+async def forecast_debug() -> dict[str, Any]:
+    """
+    Pour chaque site, affiche pourquoi il n'a pas été modélisé : nombre
+    d'aliases, nombre de messages associés, nombre de jours d'historique.
+    """
+    from app.services.predictive.prophet_forecaster import _aggregate_site_history
+
+    sites, messages, classifications_by_id = _load_corpus()
+
+    # Compteurs globaux pour comprendre
+    msg_with_parsed_ts = sum(1 for m in messages if m.get("_parsed_ts"))
+    msg_with_classification = sum(
+        1 for m in messages if m["id"] in classifications_by_id
+    )
+    classif_with_sites_entity = sum(
+        1 for c in classifications_by_id.values()
+        if (c.get("entities") or {}).get("sites")
+    )
+
+    sites_debug = []
+    for site in sites:
+        history_df = _aggregate_site_history(messages, classifications_by_id, site)
+        total = int(history_df["y"].sum()) if len(history_df) > 0 else 0
+        sites_debug.append({
+            "site_id": site["id"],
+            "site_name": site["canonical_name"],
+            "aliases_count": len(site.get("aliases") or []),
+            "aliases_sample": (site.get("aliases") or [])[:3],
+            "history_days_continuous": len(history_df),
+            "total_msgs_for_site": total,
+            "eligible": len(history_df) >= 30,
+        })
+
+    for m in messages:
+        m.pop("_parsed_ts", None)
+
+    return {
+        "messages_total": len(messages),
+        "messages_with_parsed_ts": msg_with_parsed_ts,
+        "messages_with_classification": msg_with_classification,
+        "classifications_total": len(classifications_by_id),
+        "classifications_with_sites_entity": classif_with_sites_entity,
+        "sites_debug": sites_debug,
+    }
