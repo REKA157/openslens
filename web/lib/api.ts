@@ -144,3 +144,81 @@ export type DailyReport = {
   model_used: string;
   created_at: string;
 };
+
+// --- Sites ---
+
+export type Site = {
+  id?: string;
+  canonical_name: string;
+  aliases: string[];
+  region: string | null;
+  notes: string | null;
+  is_active: boolean;
+  message_count?: number;
+};
+
+export async function fetchSites(): Promise<Site[]> {
+  const r = await fetch(`/api/sites`, { method: "GET", cache: "no-store" });
+  if (!r.ok) throw new Error(`Sites ${r.status}`);
+  const j = (await r.json()) as { sites: Site[] };
+  return j.sites || [];
+}
+
+export type DiscoverProposal = {
+  sites: {
+    canonical_name: string;
+    region: string | null;
+    aliases: string[];
+    total_occurrences: number;
+    notes?: string | null;
+  }[];
+  noise: { name: string; reason: string }[];
+  uncertain: { name: string; reason: string }[];
+};
+
+export type DiscoverResponse = {
+  classifications_scanned: number;
+  raw_distinct: number;
+  after_filter: number;
+  proposal: DiscoverProposal;
+};
+
+export async function discoverSites(
+  minOccurrences = 2,
+): Promise<DiscoverResponse> {
+  const r = await fetch(`/api/admin/discover-sites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ min_occurrences: minOccurrences }),
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Discover ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
+export async function saveSites(
+  sites: Site[],
+  replaceAll = true,
+): Promise<{ received: number; deleted_before: number; upserted: number }> {
+  const r = await fetch(`/api/admin/save-sites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sites: sites.map((s) => ({
+        canonical_name: s.canonical_name,
+        aliases: s.aliases,
+        region: s.region,
+        notes: s.notes,
+        is_active: s.is_active,
+      })),
+      replace_all: replaceAll,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Save sites ${r.status}: ${err}`);
+  }
+  return r.json();
+}
