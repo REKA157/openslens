@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v24: refresh-senders endpoint (update sender_display_name from new export)
+# v25: fix refresh-senders timestamp matching (UTC normalization both sides)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

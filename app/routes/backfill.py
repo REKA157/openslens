@@ -12,6 +12,7 @@ Endpoint admin pour charger l'historique du groupe pilote.
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -356,6 +357,25 @@ async def reclassify_missing(
     return stats
 
 
+@router.get("/debug-sent-at-sample")
+async def debug_sent_at_sample(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Retourne 3 sent_at bruts depuis la base, pour debug du matching."""
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+    sb = get_supabase()
+    res = (
+        sb.table("whatsapp_messages")
+        .select("id,sent_at,raw_text,sender_display_name")
+        .order("sent_at", desc=False)
+        .limit(3)
+        .execute()
+    )
+    return {"samples": res.data or []}
+
+
 @router.post("/refresh-senders")
 async def refresh_senders(
     file: UploadFile = File(..., description="Export WhatsApp .txt avec carnet d'adresses à jour"),
@@ -409,12 +429,32 @@ async def refresh_senders(
             break
         page += 1
 
-    # 2. Index (timestamp à la seconde, début du raw_text) → [messages]
+    def ts_utc_key(ts: str | datetime | None) -> str:
+        """
+        Clé robuste : convertit toujours en UTC, retourne 'YYYY-MM-DDTHH:MM:SS'.
+        Gère les offsets variables que Supabase renvoie selon ses settings projet.
+        """
+        if ts is None:
+            return ""
+        if isinstance(ts, str):
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return ts[:19]
+        else:
+            dt = ts
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # 2. Index (timestamp UTC à la seconde, début du raw_text) → [messages]
     by_key: dict[tuple[str, str], list[dict]] = {}
     for m in existing:
-        ts_iso = (m.get("sent_at") or "")[:19]
+        ts_key = ts_utc_key(m.get("sent_at"))
         txt_key = (m.get("raw_text") or "")[:80].strip()
-        by_key.setdefault((ts_iso, txt_key), []).append(m)
+        by_key.setdefault((ts_key, txt_key), []).append(m)
 
     stats: dict[str, int | float | str] = {
         "filename": file.filename or "",
@@ -443,9 +483,9 @@ async def refresh_senders(
             stats["skipped_system"] = int(stats["skipped_system"]) + 1
             continue
 
-        ts_iso = parsed["dt"].isoformat()[:19]
+        ts_key = ts_utc_key(parsed["dt"])
         txt_key = (raw_text_eq or "")[:80].strip()
-        candidates = by_key.get((ts_iso, txt_key), [])
+        candidates = by_key.get((ts_key, txt_key), [])
 
         if not candidates:
             stats["not_found"] = int(stats["not_found"]) + 1
