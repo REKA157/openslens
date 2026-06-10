@@ -35,11 +35,43 @@ export async function fetchLatestDailyReport(): Promise<DailyReport | null> {
   return r.json();
 }
 
-export async function generateDailyReport(force = false): Promise<DailyReport> {
+export async function fetchDailyReportByDate(
+  date: string,
+): Promise<DailyReport | null> {
+  const r = await fetch(`/api/reports/daily/${date}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`Daily ${date} ${r.status}`);
+  return r.json();
+}
+
+export type DailyReportSummary = {
+  report_date: string;
+  created_at: string;
+};
+
+export async function fetchDailyReportsList(): Promise<DailyReportSummary[]> {
+  const r = await fetch(`/api/reports/daily`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Daily list ${r.status}`);
+  const j = (await r.json()) as { reports: DailyReportSummary[] };
+  return j.reports || [];
+}
+
+export async function generateDailyReport(
+  force = false,
+  targetDate?: string,
+): Promise<DailyReport> {
+  const body: Record<string, unknown> = { force };
+  if (targetDate) body.target_date = targetDate;
   const r = await fetch(`/api/admin/generate-daily-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ force }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     const err = await r.text();
