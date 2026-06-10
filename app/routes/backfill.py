@@ -126,3 +126,65 @@ async def reclassify(
 
     logger.info("Reclassify terminé: %s", stats)
     return stats
+
+
+@router.post("/waha-watchdog")
+async def waha_watchdog(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Vérifie le statut de la session WAHA. Si elle n'est pas WORKING,
+    tente de la relancer via POST /api/sessions/{session}/start.
+    À planifier en cron toutes les 10 min.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    waha = WahaClient()
+    result: dict[str, str | bool] = {
+        "before_status": "unknown",
+        "action": "none",
+        "after_status": "unknown",
+        "ok": False,
+    }
+
+    try:
+        info = await waha.get_session_status()
+        status = (info or {}).get("status") or "unknown"
+        result["before_status"] = status
+
+        if status == "WORKING":
+            result["action"] = "none (already WORKING)"
+            result["after_status"] = status
+            result["ok"] = True
+            logger.info("WAHA watchdog: session WORKING, rien à faire")
+            return result
+
+        # Tentative de relance
+        logger.warning("WAHA watchdog: session %s, tentative de redémarrage", status)
+        # POST /api/sessions/{session}/start sans body
+        start_r = await waha._client.post(  # noqa: SLF001
+            f"/api/sessions/{waha.session_name}/start"
+        )
+        result["action"] = f"POST start (HTTP {start_r.status_code})"
+
+        # On lit le nouveau statut après ~5s
+        import asyncio
+        await asyncio.sleep(5)
+        info2 = await waha.get_session_status()
+        after = (info2 or {}).get("status") or "unknown"
+        result["after_status"] = after
+        result["ok"] = after in ("WORKING", "STARTING", "SCAN_QR_CODE")
+
+        logger.info(
+            "WAHA watchdog terminé: before=%s after=%s ok=%s",
+            status, after, result["ok"],
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("WAHA watchdog failed: %s", exc)
+        result["action"] = f"error: {exc}"
+        return result
+    finally:
+        await waha.aclose()

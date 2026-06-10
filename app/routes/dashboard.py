@@ -1,22 +1,28 @@
 """
 Endpoint /api/dashboard — KPIs et agrégations pour le tableau de bord.
 
-Retourne en un seul appel :
-  - compteurs aujourd'hui vs hier
-  - répartition par catégorie / priorité
-  - top sites mentionnés (extraits de entities.sites)
-  - urgences en cours (priority=urgent + action_required + non clôturée)
-  - actions ouvertes (demande_action récente)
+Paramètres :
+  - date (YYYY-MM-DD, optionnel) : date de référence pour la fenêtre principale.
+                                   Défaut : aujourd'hui (UTC).
+  - period (day | week | month) : granularité de la fenêtre. Défaut : day.
 
-Aucun LLM ici, juste de l'agrégation depuis Supabase.
+Retourne :
+  - kpis.current / kpis.previous : compteurs sur la fenêtre demandée et la
+    fenêtre précédente de même longueur (jour-1, semaine-1, mois-1).
+  - categories / priorities : répartition sur ~30 jours glissants (contexte)
+  - top_sites / top_senders : idem
+  - urgent_items : items urgent/high sur ~30 jours glissants
+
+Aucun LLM ici, pure agrégation.
 """
 
 import logging
+from calendar import monthrange
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_cls, datetime, time, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_supabase
 
@@ -24,45 +30,106 @@ router = APIRouter(prefix="/api", tags=["dashboard"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/dashboard")
-async def dashboard() -> dict[str, Any]:
-    sb = get_supabase()
-    now = datetime.now(tz=timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    yesterday_start = today_start - timedelta(days=1)
-    week_start = today_start - timedelta(days=7)
+def _parse_dt(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
-    # 1. Tous les messages des 7 derniers jours (suffisant pour les agrégations)
+
+def _window(period: str, ref: date_cls) -> tuple[datetime, datetime, datetime, datetime, str]:
+    """
+    Pour une date de référence et une période, retourne
+    (current_start, current_end, previous_start, previous_end, label).
+    Bornes : current_end exclusive (start <= ts < end).
+    """
+    tz = timezone.utc
+
+    if period == "day":
+        cur_start = datetime.combine(ref, time.min, tzinfo=tz)
+        cur_end = cur_start + timedelta(days=1)
+        prev_start = cur_start - timedelta(days=1)
+        prev_end = cur_start
+        label = ref.isoformat()
+
+    elif period == "week":
+        # Semaine ISO : lundi de la semaine de ref
+        weekday = ref.weekday()  # 0 = lundi
+        monday = ref - timedelta(days=weekday)
+        cur_start = datetime.combine(monday, time.min, tzinfo=tz)
+        cur_end = cur_start + timedelta(days=7)
+        prev_start = cur_start - timedelta(days=7)
+        prev_end = cur_start
+        label = f"Semaine du {monday.isoformat()}"
+
+    elif period == "month":
+        first_of_month = ref.replace(day=1)
+        cur_start = datetime.combine(first_of_month, time.min, tzinfo=tz)
+        # Premier jour du mois suivant
+        if first_of_month.month == 12:
+            next_first = first_of_month.replace(year=first_of_month.year + 1, month=1)
+        else:
+            next_first = first_of_month.replace(month=first_of_month.month + 1)
+        cur_end = datetime.combine(next_first, time.min, tzinfo=tz)
+        # Mois précédent
+        if first_of_month.month == 1:
+            prev_first = first_of_month.replace(year=first_of_month.year - 1, month=12)
+        else:
+            prev_first = first_of_month.replace(month=first_of_month.month - 1)
+        prev_start = datetime.combine(prev_first, time.min, tzinfo=tz)
+        prev_end = cur_start
+        label = first_of_month.strftime("%Y-%m")
+
+    else:
+        raise ValueError(f"period inconnu : {period}")
+
+    return cur_start, cur_end, prev_start, prev_end, label
+
+
+@router.get("/dashboard")
+async def dashboard(
+    date: str | None = Query(default=None, description="YYYY-MM-DD ; défaut = aujourd'hui UTC"),
+    period: str = Query(default="day", description="day | week | month"),
+) -> dict[str, Any]:
+    if period not in ("day", "week", "month"):
+        raise HTTPException(400, detail="period doit être day, week ou month")
+
+    if date:
+        try:
+            ref = date_cls.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(400, detail="date doit être YYYY-MM-DD") from None
+    else:
+        ref = datetime.now(tz=timezone.utc).date()
+
+    cur_start, cur_end, prev_start, prev_end, label = _window(period, ref)
+
+    sb = get_supabase()
+
+    # On charge un horizon large (30 jours en arrière par rapport au début de la fenêtre)
+    horizon_start = prev_start - timedelta(days=30)
+
     messages = (
         sb.table("whatsapp_messages")
         .select("id,sent_at,sender_phone,sender_display_name,raw_text,message_type")
         .order("sent_at", desc=True)
-        .limit(500)
+        .limit(2000)
         .execute()
     )
     msg_rows = messages.data or []
 
-    # On garde uniquement les 7 derniers jours
-    def _parse_dt(s: str | None) -> datetime | None:
-        if not s:
-            return None
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            return None
-
     recent_msgs = []
     for m in msg_rows:
         ts = _parse_dt(m.get("sent_at"))
-        if ts and ts >= week_start:
+        if ts and ts >= horizon_start:
             m["_parsed_ts"] = ts
             recent_msgs.append(m)
 
-    # 2. Classifications de tous ces messages
     msg_ids = [m["id"] for m in recent_msgs]
     classifications: list[dict] = []
     if msg_ids:
-        # PostgREST IN avec liste — chunks de 100 pour éviter URL trop longue
         for i in range(0, len(msg_ids), 100):
             chunk = msg_ids[i : i + 100]
             res = (
@@ -75,71 +142,58 @@ async def dashboard() -> dict[str, Any]:
 
     class_by_msg = {c["message_id"]: c for c in classifications}
 
-    # 3. KPIs
     def in_window(start: datetime, end: datetime, msg: dict) -> bool:
         ts = msg.get("_parsed_ts")
-        if ts is None:
-            return False
-        return start <= ts < end
+        return ts is not None and start <= ts < end
 
-    today_msgs = [m for m in recent_msgs if in_window(today_start, now, m)]
-    yesterday_msgs = [
-        m for m in recent_msgs if in_window(yesterday_start, today_start, m)
-    ]
+    current_msgs = [m for m in recent_msgs if in_window(cur_start, cur_end, m)]
+    previous_msgs = [m for m in recent_msgs if in_window(prev_start, prev_end, m)]
 
-    def count_by_category(msgs: list[dict], cat: str) -> int:
-        return sum(
-            1
-            for m in msgs
-            if class_by_msg.get(m["id"], {}).get("business_category") == cat
-        )
+    def count_cat(msgs: list[dict], cat: str) -> int:
+        return sum(1 for m in msgs if class_by_msg.get(m["id"], {}).get("business_category") == cat)
 
-    def count_by_priority(msgs: list[dict], prio: str) -> int:
-        return sum(
-            1 for m in msgs if class_by_msg.get(m["id"], {}).get("priority") == prio
-        )
+    def count_prio(msgs: list[dict], prio: str) -> int:
+        return sum(1 for m in msgs if class_by_msg.get(m["id"], {}).get("priority") == prio)
 
-    def count_action_required(msgs: list[dict]) -> int:
-        return sum(
-            1
-            for m in msgs
-            if class_by_msg.get(m["id"], {}).get("action_required") is True
-        )
+    def count_action(msgs: list[dict]) -> int:
+        return sum(1 for m in msgs if class_by_msg.get(m["id"], {}).get("action_required") is True)
 
-    kpis_today = {
-        "messages": len(today_msgs),
-        "incidents": count_by_category(today_msgs, "incident"),
-        "urgent": count_by_priority(today_msgs, "urgent"),
-        "high": count_by_priority(today_msgs, "high"),
-        "demande_action": count_by_category(today_msgs, "demande_action"),
-        "action_required": count_action_required(today_msgs),
-        "livraisons": count_by_category(today_msgs, "livraison"),
-    }
-    kpis_yesterday = {
-        "messages": len(yesterday_msgs),
-        "incidents": count_by_category(yesterday_msgs, "incident"),
-        "urgent": count_by_priority(yesterday_msgs, "urgent"),
-        "high": count_by_priority(yesterday_msgs, "high"),
-        "demande_action": count_by_category(yesterday_msgs, "demande_action"),
-        "action_required": count_action_required(yesterday_msgs),
-        "livraisons": count_by_category(yesterday_msgs, "livraison"),
-    }
+    def kpis_for(msgs: list[dict]) -> dict[str, int]:
+        return {
+            "messages": len(msgs),
+            "incidents": count_cat(msgs, "incident"),
+            "urgent": count_prio(msgs, "urgent"),
+            "high": count_prio(msgs, "high"),
+            "demande_action": count_cat(msgs, "demande_action"),
+            "action_required": count_action(msgs),
+            "livraisons": count_cat(msgs, "livraison"),
+        }
 
-    # 4. Breakdown catégorie / priorité (sur 7 jours)
+    # Contexte sur les 30 derniers jours avant cur_end (pour catégories/priorités/sites)
+    ctx_start = cur_end - timedelta(days=30)
+    ctx_msgs = [m for m in recent_msgs if in_window(ctx_start, cur_end, m)]
+
     cat_counter: Counter[str] = Counter()
     prio_counter: Counter[str] = Counter()
-    for m in recent_msgs:
-        c = class_by_msg.get(m["id"])
-        if not c:
-            continue
-        if c.get("business_category"):
-            cat_counter[c["business_category"]] += 1
-        if c.get("priority"):
-            prio_counter[c["priority"]] += 1
+    site_counter: Counter[str] = Counter()
+    sender_counter: Counter[str] = Counter()
 
-    categories_breakdown = [
-        {"category": k, "count": v} for k, v in cat_counter.most_common(10)
-    ]
+    for m in ctx_msgs:
+        c = class_by_msg.get(m["id"])
+        if c:
+            if c.get("business_category"):
+                cat_counter[c["business_category"]] += 1
+            if c.get("priority"):
+                prio_counter[c["priority"]] += 1
+            entities = c.get("entities") or {}
+            for s in entities.get("sites") or []:
+                if isinstance(s, str) and s.strip():
+                    site_counter[s.strip()] += 1
+        sender_counter[
+            m.get("sender_display_name") or m.get("sender_phone") or "?"
+        ] += 1
+
+    categories_breakdown = [{"category": k, "count": v} for k, v in cat_counter.most_common(10)]
     priorities_breakdown = [
         {"priority": k, "count": v}
         for k, v in sorted(
@@ -149,34 +203,16 @@ async def dashboard() -> dict[str, Any]:
             else 99,
         )
     ]
-
-    # 5. Top sites mentionnés (extraits de entities.sites sur 7 jours)
-    site_counter: Counter[str] = Counter()
-    for c in classifications:
-        entities = c.get("entities") or {}
-        sites = entities.get("sites") or []
-        for s in sites:
-            if isinstance(s, str) and s.strip():
-                site_counter[s.strip()] += 1
     top_sites = [{"site": k, "count": v} for k, v in site_counter.most_common(10)]
+    top_senders = [{"sender": k, "count": v} for k, v in sender_counter.most_common(8)]
 
-    # 6. Senders les plus actifs (sur 7 jours)
-    sender_counter: Counter[str] = Counter()
-    for m in recent_msgs:
-        key = m.get("sender_display_name") or m.get("sender_phone") or "?"
-        sender_counter[key] += 1
-    top_senders = [
-        {"sender": k, "count": v} for k, v in sender_counter.most_common(8)
-    ]
-
-    # 7. Urgences en cours : urgent ou high + action_required (sur 7 jours)
+    # Urgent items dans la fenêtre courante (pas seulement les 7 jours auparavant)
     urgent_items = []
-    for m in recent_msgs:
+    for m in current_msgs:
         c = class_by_msg.get(m["id"])
         if not c:
             continue
-        priority = c.get("priority")
-        if priority not in ("urgent", "high"):
+        if c.get("priority") not in ("urgent", "high"):
             continue
         urgent_items.append(
             {
@@ -184,24 +220,37 @@ async def dashboard() -> dict[str, Any]:
                 "sender": m.get("sender_display_name") or m.get("sender_phone"),
                 "sent_at": m["sent_at"],
                 "category": c.get("business_category"),
-                "priority": priority,
+                "priority": c.get("priority"),
                 "summary": c.get("summary"),
                 "action_required": c.get("action_required"),
                 "raw_text": (m.get("raw_text") or "")[:200],
             }
         )
-    urgent_items = sorted(urgent_items, key=lambda x: x["sent_at"], reverse=True)[:20]
+    urgent_items.sort(key=lambda x: x["sent_at"], reverse=True)
 
-    # Nettoyage : on retire le champ technique _parsed_ts avant le retour
+    # Nettoyage : on retire le champ technique avant le retour
     for m in recent_msgs:
         m.pop("_parsed_ts", None)
 
     return {
-        "generated_at": now.isoformat(),
-        "kpis": {"today": kpis_today, "yesterday": kpis_yesterday},
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "period": period,
+        "label": label,
+        "current_window": {
+            "start": cur_start.isoformat(),
+            "end": cur_end.isoformat(),
+        },
+        "previous_window": {
+            "start": prev_start.isoformat(),
+            "end": prev_end.isoformat(),
+        },
+        "kpis": {
+            "current": kpis_for(current_msgs),
+            "previous": kpis_for(previous_msgs),
+        },
         "categories": categories_breakdown,
         "priorities": priorities_breakdown,
         "top_sites": top_sites,
         "top_senders": top_senders,
-        "urgent_items": urgent_items,
+        "urgent_items": urgent_items[:30],
     }
