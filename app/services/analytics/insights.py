@@ -174,6 +174,29 @@ def gather_context_per_site(
     return by_site
 
 
+def _extract_json_object(raw: str) -> str:
+    """
+    Extrait un objet JSON depuis la réponse Claude, tolérant aux variations :
+    - Markdown fences ```json ... ```
+    - Texte explicatif avant ou après le JSON
+    - Whitespace
+
+    Stratégie : strip fences, puis prendre le premier '{' jusqu'au dernier '}'.
+    """
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.startswith("json"):
+            s = s[4:]
+        s = s.strip()
+    # Repli : extrait le bloc {...} le plus large
+    first = s.find("{")
+    last = s.rfind("}")
+    if first >= 0 and last > first:
+        return s[first : last + 1]
+    return s
+
+
 def _format_messages_block(by_site_ctx: dict[str, dict[str, Any]]) -> str:
     out_lines: list[str] = []
     for site_id, ctx in by_site_ctx.items():
@@ -229,7 +252,7 @@ async def generate_insights(
     try:
         response = await client.messages.create(
             model=INSIGHT_MODEL,
-            max_tokens=3072,
+            max_tokens=4096,
             system=[
                 {
                     "type": "text",
@@ -240,15 +263,19 @@ async def generate_insights(
             messages=[{"role": "user", "content": user_content}],
         )
         raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`")
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.exception("Claude a renvoyé un JSON invalide : %s", exc)
-        raise
+        cleaned = _extract_json_object(raw)
+        try:
+            result = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "JSON Claude invalide à pos %d. Réponse brute (premiers 500): %r ; "
+                "extraite (premiers 500): %r ; (derniers 200): %r",
+                exc.pos, raw[:500], cleaned[:500], cleaned[-200:],
+            )
+            raise ValueError(
+                f"Claude a renvoyé un JSON invalide (taille {len(raw)}). "
+                f"Erreur parse : {exc}. Vérifie max_tokens et le prompt."
+            ) from exc
     finally:
         await client.close()
 

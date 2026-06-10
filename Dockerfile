@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v30: diagnostic prédictif en mode async (start+poll) — fix Vercel cap 60s
+# v31: JSON parsing robuste + max_tokens 4096 (fix Expecting value char 8413)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
