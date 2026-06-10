@@ -91,6 +91,7 @@ def _window(period: str, ref: date_cls) -> tuple[datetime, datetime, datetime, d
 async def dashboard(
     date: str | None = Query(default=None, description="YYYY-MM-DD ; défaut = aujourd'hui UTC"),
     period: str = Query(default="day", description="day | week | month"),
+    site_id: str | None = Query(default=None, description="Filtrer sur un site canonique"),
 ) -> dict[str, Any]:
     if period not in ("day", "week", "month"):
         raise HTTPException(400, detail="period doit être day, week ou month")
@@ -104,6 +105,16 @@ async def dashboard(
         ref = datetime.now(tz=timezone.utc).date()
 
     cur_start, cur_end, prev_start, prev_end, label = _window(period, ref)
+
+    # Filtre site (si demandé) : on récupère les aliases du site
+    site_aliases: list[str] | None = None
+    if site_id:
+        # Import local pour éviter une dépendance circulaire au load
+        from app.routes.sites import fetch_site_aliases
+
+        site_aliases = fetch_site_aliases(site_id)
+        if site_aliases is None:
+            raise HTTPException(404, detail="Site introuvable")
 
     sb = get_supabase()
 
@@ -140,6 +151,21 @@ async def dashboard(
             classifications.extend(res.data or [])
 
     class_by_msg = {c["message_id"]: c for c in classifications}
+
+    # Si filtre site demandé, on restreint les messages aux seuls qui mentionnent
+    # un alias du site (dans entities.sites de leur classification). Les messages
+    # sans classification sont exclus du périmètre du filtre.
+    if site_aliases is not None:
+        from app.routes.sites import site_alias_match
+
+        def msg_mentions_site(msg: dict) -> bool:
+            c = class_by_msg.get(msg["id"])
+            if not c:
+                return False
+            ents = c.get("entities") or {}
+            return site_alias_match(ents.get("sites") or [], site_aliases)
+
+        recent_msgs = [m for m in recent_msgs if msg_mentions_site(m)]
 
     def in_window(start: datetime, end: datetime, msg: dict) -> bool:
         ts = msg.get("_parsed_ts")
@@ -235,6 +261,7 @@ async def dashboard(
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "period": period,
         "label": label,
+        "site_id": site_id,
         "current_window": {
             "start": cur_start.isoformat(),
             "end": cur_end.isoformat(),

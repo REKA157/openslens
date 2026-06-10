@@ -44,8 +44,10 @@ export async function GET(req: Request) {
   const qs = new URLSearchParams();
   const d = incoming.searchParams.get("date");
   const p = incoming.searchParams.get("period");
+  const s = incoming.searchParams.get("site_id");
   if (d) qs.set("date", d);
   if (p) qs.set("period", p);
+  if (s) qs.set("site_id", s);
   const targetUrl =
     `${BACKEND_URL}/api/dashboard` + (qs.toString() ? `?${qs.toString()}` : "");
   try {

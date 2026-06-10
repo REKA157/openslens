@@ -13,10 +13,12 @@ export type DashboardPeriod = "day" | "week" | "month";
 export async function fetchDashboard(
   date?: string,
   period: DashboardPeriod = "day",
+  siteId?: string,
 ): Promise<DashboardData> {
   const qs = new URLSearchParams();
   if (date) qs.set("date", date);
   qs.set("period", period);
+  if (siteId) qs.set("site_id", siteId);
   const r = await fetch(`/api/dashboard?${qs.toString()}`, {
     method: "GET",
     cache: "no-store",
@@ -162,6 +164,15 @@ export async function fetchSites(): Promise<Site[]> {
   if (!r.ok) throw new Error(`Sites ${r.status}`);
   const j = (await r.json()) as { sites: Site[] };
   return j.sites || [];
+}
+
+export async function fetchSite(siteId: string): Promise<Site> {
+  const r = await fetch(`/api/sites/${siteId}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`Site ${siteId} ${r.status}`);
+  return r.json();
 }
 
 export type DiscoverProposal = {

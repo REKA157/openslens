@@ -183,6 +183,61 @@ async def save_sites_endpoint(
 # ----------------------------------------------------------------------------
 
 
+def site_alias_match(entities_sites: list, aliases: list[str]) -> bool:
+    """
+    True si l'un des aliases du site match (substring case-insensitive,
+    dans un sens ou dans l'autre) au moins une des sites extraites de la
+    classification.
+
+    Cette fonction est partagée entre /api/sites (compteur) et le filtrage
+    site dans le dashboard / les rapports.
+    """
+    if not aliases or not entities_sites:
+        return False
+    normalized_aliases = [a.lower() for a in aliases if a]
+    for s in entities_sites:
+        if not isinstance(s, str):
+            continue
+        s_norm = s.lower()
+        for a_norm in normalized_aliases:
+            if a_norm and (a_norm in s_norm or s_norm in a_norm):
+                return True
+    return False
+
+
+def fetch_site_aliases(site_id: str) -> list[str] | None:
+    """Récupère les aliases d'un site par id. None si introuvable."""
+    sb = get_supabase()
+    res = (
+        sb.table("sites")
+        .select("aliases")
+        .eq("id", site_id)
+        .eq("company_id", settings.company_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    return res.data[0].get("aliases") or []
+
+
+@api_router.get("/{site_id}")
+async def get_site(site_id: str):
+    """Récupère un site par son id (pour la page de détail)."""
+    sb = get_supabase()
+    res = (
+        sb.table("sites")
+        .select("*")
+        .eq("id", site_id)
+        .eq("company_id", settings.company_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Site introuvable")
+    return res.data[0]
+
+
 @api_router.get("")
 async def list_sites():
     """
@@ -225,20 +280,6 @@ async def list_sites():
         page += 1
 
     # Pour chaque site, compte le nombre de classifs qui mentionnent un alias
-    # (case-insensitive, en cherchant un match contains)
-    def site_matches(entities_sites: list[str], aliases: list[str]) -> bool:
-        if not entities_sites or not aliases:
-            return False
-        normalized_aliases = [a.lower() for a in aliases]
-        for s in entities_sites:
-            if not isinstance(s, str):
-                continue
-            s_norm = s.lower()
-            for a_norm in normalized_aliases:
-                if a_norm and (a_norm in s_norm or s_norm in a_norm):
-                    return True
-        return False
-
     enriched: list[dict[str, Any]] = []
     for site in sites:
         aliases = site.get("aliases") or []
@@ -246,7 +287,7 @@ async def list_sites():
         for c in classifications:
             entities = c.get("entities") or {}
             ents_sites = entities.get("sites") or []
-            if site_matches(ents_sites, aliases):
+            if site_alias_match(ents_sites, aliases):
                 count += 1
         enriched.append({**site, "message_count": count})
 

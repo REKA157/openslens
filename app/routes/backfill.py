@@ -356,6 +356,131 @@ async def reclassify_missing(
     return stats
 
 
+@router.post("/refresh-senders")
+async def refresh_senders(
+    file: UploadFile = File(..., description="Export WhatsApp .txt avec carnet d'adresses à jour"),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Met à jour les `sender_display_name` des messages existants à partir d'un
+    NOUVEL export WhatsApp dont le carnet d'adresses a été actualisé.
+
+    Ne crée AUCUN nouveau message — uniquement des UPDATEs. Le matching se
+    fait sur (sent_at à la seconde près, début du raw_text) pour identifier
+    le message correspondant en base, indépendamment du changement de nom.
+
+    Note : l'export WhatsApp natif ne contient pas les numéros de téléphone,
+    donc `sender_phone` reste inchangé.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="replace")
+
+    sb = get_supabase()
+    t0 = time.monotonic()
+
+    # 1. Charger tous les messages existants (paginé)
+    existing: list[dict] = []
+    PAGE = 1000
+    page = 0
+    while page < 20:
+        res = (
+            sb.table("whatsapp_messages")
+            .select("id,sent_at,raw_text,sender_display_name")
+            .order("sent_at", desc=False)
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        existing.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 2. Index (timestamp à la seconde, début du raw_text) → [messages]
+    by_key: dict[tuple[str, str], list[dict]] = {}
+    for m in existing:
+        ts_iso = (m.get("sent_at") or "")[:19]
+        txt_key = (m.get("raw_text") or "")[:80].strip()
+        by_key.setdefault((ts_iso, txt_key), []).append(m)
+
+    stats: dict[str, int | float | str] = {
+        "filename": file.filename or "",
+        "existing_in_db": len(existing),
+        "parsed": 0,
+        "skipped_system": 0,
+        "matched": 0,
+        "not_found": 0,
+        "no_change": 0,
+        "updated": 0,
+        "errors": 0,
+    }
+    sample_changes: list[str] = []
+
+    # 3. Re-parser le nouvel export
+    for parsed in import_export.parse_export(text):
+        stats["parsed"] = int(stats["parsed"]) + 1
+
+        new_sender = import_export._normalize_sender(parsed["sender"])
+        if new_sender in {"ADS Multi Sites"}:
+            stats["skipped_system"] = int(stats["skipped_system"]) + 1
+            continue
+
+        mtype, raw_text_eq = import_export._classify_type(parsed["text"])
+        if mtype == "system":
+            stats["skipped_system"] = int(stats["skipped_system"]) + 1
+            continue
+
+        ts_iso = parsed["dt"].isoformat()[:19]
+        txt_key = (raw_text_eq or "")[:80].strip()
+        candidates = by_key.get((ts_iso, txt_key), [])
+
+        if not candidates:
+            stats["not_found"] = int(stats["not_found"]) + 1
+            continue
+
+        # Si plusieurs candidats à la même clé, on prend celui dont le sender
+        # actuel est le plus différent (priorité au "~ qqun" non identifié).
+        msg = candidates[0]
+        stats["matched"] = int(stats["matched"]) + 1
+
+        current_sender = msg.get("sender_display_name") or ""
+        if current_sender == new_sender:
+            stats["no_change"] = int(stats["no_change"]) + 1
+            continue
+
+        try:
+            sb.table("whatsapp_messages").update(
+                {"sender_display_name": new_sender}
+            ).eq("id", msg["id"]).execute()
+            stats["updated"] = int(stats["updated"]) + 1
+            if len(sample_changes) < 20:
+                sample_changes.append(f"{current_sender!r} → {new_sender!r}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Update sender failed for %s: %s", msg["id"], exc)
+            stats["errors"] = int(stats["errors"]) + 1
+
+    stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+    stats["sample_changes"] = sample_changes  # type: ignore[assignment]
+    logger.info(
+        "refresh-senders terminé: matched=%s updated=%s not_found=%s",
+        stats["matched"], stats["updated"], stats["not_found"],
+    )
+    return stats
+
+
 @router.post("/import-export")
 async def import_whatsapp_export(
     file: UploadFile = File(..., description="Fichier _chat.txt export WhatsApp"),

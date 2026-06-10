@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v22: sites canoniques (discover/save/list endpoints + sites table)
+# v24: refresh-senders endpoint (update sender_display_name from new export)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { Nav } from "@/components/Nav";
@@ -386,13 +387,24 @@ export default function SitesPage() {
                       className="border-t border-zinc-100 dark:border-zinc-800"
                     >
                       <td className="px-3 py-2">
-                        <input
-                          value={s.canonical_name}
-                          onChange={(e) =>
-                            update(i, { canonical_name: e.target.value })
-                          }
-                          className="w-full min-w-[180px] rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                        />
+                        <div className="flex items-center gap-1">
+                          <input
+                            value={s.canonical_name}
+                            onChange={(e) =>
+                              update(i, { canonical_name: e.target.value })
+                            }
+                            className="w-full min-w-[180px] rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                          />
+                          {s.id && (
+                            <Link
+                              href={`/sites/${s.id}`}
+                              title="Voir le détail du site"
+                              className="shrink-0 rounded border border-zinc-300 px-1.5 py-1 text-[10px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            >
+                              →
+                            </Link>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <select
