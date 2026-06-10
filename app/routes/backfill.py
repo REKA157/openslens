@@ -468,6 +468,8 @@ async def refresh_senders(
         "errors": 0,
     }
     sample_changes: list[str] = []
+    debug_parsed_keys: list[dict] = []
+    debug_not_found_samples: list[dict] = []
 
     # 3. Re-parser le nouvel export
     for parsed in import_export.parse_export(text):
@@ -485,9 +487,30 @@ async def refresh_senders(
 
         ts_key = ts_utc_key(parsed["dt"])
         txt_key = (raw_text_eq or "")[:80].strip()
+
+        if len(debug_parsed_keys) < 5:
+            debug_parsed_keys.append({
+                "ts": ts_key,
+                "txt_first_60": txt_key[:60],
+                "sender": new_sender,
+            })
+
         candidates = by_key.get((ts_key, txt_key), [])
 
         if not candidates:
+            if len(debug_not_found_samples) < 5:
+                # Cherche les keys DB avec ce même timestamp pour comparer textes
+                same_ts = [
+                    {"db_txt_first_60": k[1][:60], "n": len(v)}
+                    for k, v in by_key.items()
+                    if k[0] == ts_key
+                ]
+                debug_not_found_samples.append({
+                    "parsed_ts": ts_key,
+                    "parsed_txt_first_60": txt_key[:60],
+                    "parsed_sender": new_sender,
+                    "db_keys_at_same_ts": same_ts[:3],
+                })
             stats["not_found"] = int(stats["not_found"]) + 1
             continue
 
@@ -514,6 +537,8 @@ async def refresh_senders(
 
     stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
     stats["sample_changes"] = sample_changes  # type: ignore[assignment]
+    stats["debug_parsed_keys"] = debug_parsed_keys  # type: ignore[assignment]
+    stats["debug_not_found_samples"] = debug_not_found_samples  # type: ignore[assignment]
     logger.info(
         "refresh-senders terminé: matched=%s updated=%s not_found=%s",
         stats["matched"], stats["updated"], stats["not_found"],
