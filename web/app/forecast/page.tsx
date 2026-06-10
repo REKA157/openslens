@@ -40,7 +40,7 @@ function peakPrediction(predictions: ForecastPredictionPoint[]):
   const d = new Date(peak.date + "T00:00:00Z");
   return {
     date: peak.date,
-    value: peak.value ?? peak.yhat,
+    value: peak.yhat,
     dayName: DAY_NAMES_FR[d.getUTCDay()],
   };
 }
