@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -43,6 +44,12 @@ class ReclassifyMissingRequest(BaseModel):
     """Classifie les messages texte qui n'ont AUCUNE classification en base."""
     concurrency: int = Field(default=5, ge=1, le=20)
     max_messages: int = Field(default=10000, ge=1, le=20000)
+
+
+class AnalyzeMissingImagesRequest(BaseModel):
+    """Lance l'analyse vision sur les images sans entrée dans image_analysis."""
+    concurrency: int = Field(default=3, ge=1, le=10)
+    max_images: int = Field(default=100, ge=1, le=2500)
 
 
 @router.post("/backfill")
@@ -564,6 +571,148 @@ async def refresh_senders(
         "refresh-senders terminé: matched=%s updated=%s not_found=%s",
         stats["matched"], stats["updated"], stats["not_found"],
     )
+    return stats
+
+
+@router.post("/analyze-missing-images")
+async def analyze_missing_images(
+    body: AnalyzeMissingImagesRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Rattrape les images stockées dans whatsapp_media mais sans entrée dans
+    image_analysis : télécharge l'image depuis Supabase Storage et appelle
+    Claude Sonnet vision.
+
+    Sortie : stats détaillées (analyzed / errors / sample_errors).
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    from app.services.ai import vision as vision_service
+    import httpx
+
+    sb = get_supabase()
+    t0 = time.time()
+
+    # 1. Récupère tous les media_ids déjà analysés
+    analyzed_ids: set[str] = set()
+    page = 0
+    PAGE = 1000
+    while page < 20:
+        res = (
+            sb.table("image_analysis")
+            .select("media_id")
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        analyzed_ids.update(r["media_id"] for r in rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 2. Récupère les media images stockés
+    media_rows: list[dict] = []
+    page = 0
+    while page < 20 and len(media_rows) < body.max_images * 2:
+        res = (
+            sb.table("whatsapp_media")
+            .select("id,storage_path,mime_type,media_type,status")
+            .eq("media_type", "image")
+            .eq("status", "stored")
+            .order("created_at", desc=False)
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        media_rows.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 3. Filtre ceux pas encore analysés
+    todo = [
+        m for m in media_rows
+        if m["id"] not in analyzed_ids and m.get("storage_path")
+    ][: body.max_images]
+
+    sample_errors: list[str] = []
+    stats: dict[str, Any] = {
+        "total_images_stored": len(media_rows),
+        "already_analyzed": len(analyzed_ids),
+        "todo": len(todo),
+        "concurrency": body.concurrency,
+        "analyzed": 0,
+        "skipped_unsupported": 0,
+        "errors": 0,
+        "sample_errors": sample_errors,
+    }
+
+    if not todo:
+        stats["elapsed_seconds"] = round(time.time() - t0, 2)
+        return stats
+
+    # Helper : signed URL pour télécharger depuis Storage
+    base = settings.supabase_url.rstrip("/")
+    auth_headers = {"apikey": settings.supabase_secret_key, "Authorization": f"Bearer {settings.supabase_secret_key}"}
+
+    async def download_image(storage_path: str) -> tuple[bytes, str] | None:
+        # Endpoint privé "object" car le bucket est privé
+        url = f"{base}/storage/v1/object/Media/{storage_path}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.get(url, headers=auth_headers)
+            if r.status_code != 200:
+                return None
+            ct = r.headers.get("content-type") or "image/jpeg"
+            return r.content, ct
+
+    sem = asyncio.Semaphore(body.concurrency)
+
+    async def worker(media: dict) -> str:
+        async with sem:
+            try:
+                dl = await download_image(media["storage_path"])
+                if dl is None:
+                    return "error_download"
+                image_bytes, ct = dl
+                # Préfère le mime_type stocké si présent, sinon celui du content-type
+                mime = media.get("mime_type") or ct
+                if mime not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+                    return "unsupported"
+                result = await vision_service.analyze_image(
+                    media_id=media["id"],
+                    image_bytes=image_bytes,
+                    mime_type=mime,
+                )
+                if result is None:
+                    return "error_analysis"
+                return "ok"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Vision backfill failed for %s: %s", media["id"], exc)
+                if len(sample_errors) < 10:
+                    sample_errors.append(f"{media['id']}: {type(exc).__name__}: {exc!s}[:200]")
+                return "error_exception"
+
+    results = await asyncio.gather(*(worker(m) for m in todo))
+    for r in results:
+        if r == "ok":
+            stats["analyzed"] += 1
+        elif r == "unsupported":
+            stats["skipped_unsupported"] += 1
+        else:
+            stats["errors"] += 1
+
+    stats["sample_errors"] = sample_errors
+    stats["elapsed_seconds"] = round(time.time() - t0, 2)
+    logger.info("analyze-missing-images: %s", stats)
     return stats
 
 

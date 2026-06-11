@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v39: Process analysis — response times, repeated, dead threads, critical hours
+# v40: Vision backfill — /admin/analyze-missing-images (Sonnet vision on stored images)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
