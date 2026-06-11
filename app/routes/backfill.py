@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.db import get_supabase
-from app.services import import_export, ingest
+from app.services import import_export, import_export_media, ingest
 from app.services.ai import classify as classify_service
 from app.services.groups import get_or_create_pilot_group_id
 from app.waha import WahaClient
@@ -713,6 +713,45 @@ async def analyze_missing_images(
     stats["sample_errors"] = sample_errors
     stats["elapsed_seconds"] = round(time.time() - t0, 2)
     logger.info("analyze-missing-images: %s", stats)
+    return stats
+
+
+@router.post("/import-export-with-media")
+async def import_whatsapp_export_with_media(
+    file: UploadFile = File(..., description="Zip WhatsApp export AVEC médias"),
+    upload_concurrency: int = 3,
+    analyze_images: bool = True,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Importe un zip d'export WhatsApp AVEC médias. Parse le _chat.txt, upload
+    chaque média référencé dans le bucket Supabase Storage, crée les rows
+    whatsapp_media, et lance vision Claude sur les images.
+
+    `upload_concurrency` : nb d'uploads en parallèle (défaut 3 pour ménager
+    le rate-limit Anthropic vision).
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(400, detail="Le fichier doit être un .zip")
+
+    t0 = time.time()
+    try:
+        stats = await import_export_media.import_zip(
+            file.file,
+            upload_concurrency=upload_concurrency,
+            analyze_images=analyze_images,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("import-export-with-media failed: %s", exc)
+        raise HTTPException(500, detail=f"Import zip échoué : {exc}")
+
+    stats["elapsed_seconds"] = round(time.time() - t0, 2)
+    stats["filename"] = file.filename
+    logger.info("import-export-with-media: %s", stats)
     return stats
 
 

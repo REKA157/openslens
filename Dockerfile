@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v40: Vision backfill — /admin/analyze-missing-images (Sonnet vision on stored images)
+# v41: import zip avec médias (whatsapp export with media → bucket + vision)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
