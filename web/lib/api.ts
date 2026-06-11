@@ -415,6 +415,97 @@ export async function fetchForecast(
   return r.json();
 }
 
+// --- Analyse processus ---
+
+export type DelayStats = {
+  n: number;
+  median?: number;
+  p90?: number;
+  mean?: number;
+  max?: number;
+};
+
+export type ResponseTimes = {
+  window_hours: number;
+  total_requests: number;
+  matched_resolutions: number;
+  unresolved_count: number;
+  global_stats: DelayStats;
+  by_site: ({ site_id: string; site_name: string } & DelayStats)[];
+  by_category: ({ category: string } & DelayStats)[];
+};
+
+export type RepeatedCluster = {
+  site_id: string;
+  site_name: string;
+  category: string;
+  count: number;
+  window_start: string;
+  window_end: string;
+  span_hours: number;
+  examples: { date: string; summary: string }[];
+};
+
+export type RepeatedRequests = {
+  window_days: number;
+  min_repetitions: number;
+  clusters_count: number;
+  total_requests_in_clusters: number;
+  by_site_summary: { site_name: string; repeated_requests: number }[];
+  clusters: RepeatedCluster[];
+};
+
+export type DeadThread = {
+  message_id: string;
+  sent_at: string;
+  age_days: number;
+  site_id: string;
+  site_name: string;
+  category: string | null;
+  priority: string | null;
+  summary: string;
+  sender: string;
+};
+
+export type DeadThreads = {
+  min_age_hours: number;
+  window_hours: number;
+  dead_count: number;
+  by_site: { site_name: string; count: number }[];
+  by_priority: { priority: string; count: number }[];
+  items: DeadThread[];
+};
+
+export type CriticalHours = {
+  site_id: string | null;
+  total_critical_messages: number;
+  heatmap: number[][]; // [7][24]
+  day_labels: string[];
+  top_buckets: { day: string; dow: number; hour: number; count: number }[];
+};
+
+export type ProcessAnalysisData = {
+  messages_scanned: number;
+  classifications_loaded: number;
+  sites_count: number;
+  response_times: ResponseTimes;
+  repeated_requests: RepeatedRequests;
+  dead_threads: DeadThreads;
+  critical_hours: CriticalHours;
+};
+
+export async function fetchProcessAnalysis(): Promise<ProcessAnalysisData> {
+  const r = await fetch(`/api/process/analysis`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Process analysis ${r.status}: ${err}`);
+  }
+  return r.json();
+}
+
 export type DiscoverProposal = {
   sites: {
     canonical_name: string;

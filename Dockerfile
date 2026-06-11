@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v37: switch Prophet → statsmodels SARIMAX (no native compilation needed)
+# v39: Process analysis — response times, repeated, dead threads, critical hours
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
