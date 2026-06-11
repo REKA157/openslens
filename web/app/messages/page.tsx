@@ -33,9 +33,21 @@ type Media = {
   mime_type: string | null;
 };
 
+type ImageAnalysis = {
+  media_id: string;
+  visual_description: string | null;
+  ocr_text: string | null;
+  detected_objects: string[] | null;
+  image_type: string | null;
+  possible_anomaly: boolean | null;
+  anomaly_description: string | null;
+  confidence: number | null;
+};
+
 type EnrichedRow = Message & {
   classification: Classification | null;
   media: Media | null;
+  vision: ImageAnalysis | null;
 };
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -98,18 +110,38 @@ export default function MessagesPage() {
       .select("id,message_id,media_type,storage_path,mime_type")
       .in("message_id", ids);
 
-    // 4. Merge
+    // 4. Analyses vision pour ces médias
+    const mediaIds = (medias || []).map((m) => m.id);
+    let visions: ImageAnalysis[] = [];
+    if (mediaIds.length > 0) {
+      const { data: visionsData } = await supabase
+        .from("image_analysis")
+        .select(
+          "media_id,visual_description,ocr_text,detected_objects,image_type,possible_anomaly,anomaly_description,confidence"
+        )
+        .in("media_id", mediaIds);
+      visions = (visionsData || []) as ImageAnalysis[];
+    }
+
+    // 5. Merge
     const cMap = new Map<string, Classification>();
     (classifications || []).forEach((c) => cMap.set(c.message_id, c as Classification));
 
     const mMap = new Map<string, Media>();
     (medias || []).forEach((m) => mMap.set(m.message_id, m as Media));
 
-    const enriched: EnrichedRow[] = (messages as Message[]).map((m) => ({
-      ...m,
-      classification: cMap.get(m.id) ?? null,
-      media: mMap.get(m.id) ?? null,
-    }));
+    const vMap = new Map<string, ImageAnalysis>();
+    visions.forEach((v) => vMap.set(v.media_id, v));
+
+    const enriched: EnrichedRow[] = (messages as Message[]).map((m) => {
+      const media = mMap.get(m.id) ?? null;
+      return {
+        ...m,
+        classification: cMap.get(m.id) ?? null,
+        media,
+        vision: media ? (vMap.get(media.id) ?? null) : null,
+      };
+    });
 
     setRows(enriched);
     setLoading(false);
@@ -206,6 +238,7 @@ export default function MessagesPage() {
 function MessageCard({ row }: { row: EnrichedRow }) {
   const c = row.classification;
   const media = row.media;
+  const vision = row.vision;
   const priorityClass = c?.priority
     ? PRIORITY_COLORS[c.priority] ?? PRIORITY_COLORS.low
     : "";
@@ -285,6 +318,70 @@ function MessageCard({ row }: { row: EnrichedRow }) {
           />
         )}
       </div>
+
+      {/* Analyse vision Claude */}
+      {vision && (
+        <div
+          className={`mt-3 rounded-md border p-3 text-xs ${
+            vision.possible_anomaly
+              ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20"
+              : "border-zinc-100 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              👁 Analyse visuelle
+            </span>
+            {vision.image_type && (
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                {vision.image_type}
+              </span>
+            )}
+            {vision.possible_anomaly && (
+              <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                ⚠ ANOMALIE
+              </span>
+            )}
+            {vision.confidence !== null && vision.confidence !== undefined && (
+              <span className="text-[10px] text-zinc-500">
+                conf {Math.round((vision.confidence || 0) * 100)}%
+              </span>
+            )}
+          </div>
+          {vision.visual_description && (
+            <p className="mt-1.5 text-zinc-800 dark:text-zinc-200">
+              {vision.visual_description}
+            </p>
+          )}
+          {vision.anomaly_description && (
+            <p className="mt-1 text-red-700 dark:text-red-400">
+              ⚠ {vision.anomaly_description}
+            </p>
+          )}
+          {vision.ocr_text && (
+            <div className="mt-1.5 border-t border-zinc-200 pt-1.5 dark:border-zinc-800">
+              <span className="text-[10px] font-medium uppercase text-zinc-500">
+                Texte lu :
+              </span>{" "}
+              <span className="text-zinc-700 dark:text-zinc-300">
+                {vision.ocr_text}
+              </span>
+            </div>
+          )}
+          {vision.detected_objects && vision.detected_objects.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {vision.detected_objects.map((obj, i) => (
+                <span
+                  key={i}
+                  className="rounded bg-zinc-200 px-1 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                >
+                  {obj}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }
