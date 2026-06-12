@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     pilot_group_id: str
     company_id: str
 
+    # URL que WAHA doit appeler pour livrer les events (webhook entrant).
+    # Backend et WAHA tournent sur le même VPS Coolify ; le backend est exposé
+    # sur l'IP publique:8001. Surchargeable via WEBHOOK_CALLBACK_URL si l'URL
+    # interne change.
+    webhook_callback_url: str = "http://2.24.15.60:8001/ingest/webhook/waha"
+
     # IA
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None

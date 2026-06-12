@@ -65,6 +65,45 @@ class WahaClient:
         r.raise_for_status()
         return r.json()
 
+    async def update_webhook(
+        self,
+        callback_url: str,
+        events: list[str],
+        *,
+        restart: bool = True,
+    ) -> dict:
+        """
+        (Ré)enregistre le webhook de la session via l'API WAHA.
+
+        WAHA stocke le webhook dans la config de session ; on lit la config
+        actuelle, on y injecte notre webhook, et on PUT le tout. Un restart
+        applique la nouvelle config (la session étant authentifiée, ça ne
+        redemande PAS de QR code).
+
+        Retourne les réponses brutes WAHA pour diagnostic (les versions de
+        l'API diffèrent légèrement).
+        """
+        info = await self.get_session_status()
+        config = dict((info or {}).get("config") or {})
+        config["webhooks"] = [{"url": callback_url, "events": events}]
+
+        result: dict = {}
+        put_r = await self._client.put(
+            f"/api/sessions/{self.session_name}",
+            json={"config": config},
+        )
+        result["put_status"] = put_r.status_code
+        result["put_body"] = put_r.text[:300]
+
+        if restart:
+            rs = await self._client.post(
+                f"/api/sessions/{self.session_name}/restart"
+            )
+            result["restart_status"] = rs.status_code
+            result["restart_body"] = rs.text[:300]
+
+        return result
+
     async def list_groups(self) -> list[dict]:
         r = await self._client.get(f"/api/{self.session_name}/groups")
         r.raise_for_status()

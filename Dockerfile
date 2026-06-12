@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v43: watchdog auto-réparateur (safety backfill) + diagnostic pipeline + MKGT
+# v44: restauration webhook (ensure-webhook + self-heal watchdog) + fix diagnostic
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

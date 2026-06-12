@@ -95,6 +95,22 @@ class _RestQuery:
         self._params[column] = f"neq.{value}"
         return self
 
+    def gte(self, column: str, value: Any) -> "_RestQuery":
+        self._params[column] = f"gte.{value}"
+        return self
+
+    def lte(self, column: str, value: Any) -> "_RestQuery":
+        self._params[column] = f"lte.{value}"
+        return self
+
+    def gt(self, column: str, value: Any) -> "_RestQuery":
+        self._params[column] = f"gt.{value}"
+        return self
+
+    def lt(self, column: str, value: Any) -> "_RestQuery":
+        self._params[column] = f"lt.{value}"
+        return self
+
     def in_(self, column: str, values: list[Any]) -> "_RestQuery":
         """PostgREST IN filter : ?column=in.(val1,val2,val3)"""
         if not values:

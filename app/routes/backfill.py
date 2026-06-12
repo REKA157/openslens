@@ -274,6 +274,25 @@ async def waha_watchdog(
             result["after_status"] = after
             result["ok"] = after in ("WORKING", "STARTING", "SCAN_QR_CODE")
             status = after
+            info = info2
+
+        # Auto-réparation du webhook : si la session est WORKING mais qu'aucun
+        # webhook n'est configuré, on le réinjecte (best-effort, sans restart
+        # pour ne pas perturber). C'est la cause racine des arrêts d'ingestion.
+        if result.get("after_status") == "WORKING":
+            hooks = ((info or {}).get("config") or {}).get("webhooks") or []
+            if not hooks:
+                logger.warning("WAHA watchdog: 0 webhook → réinjection")
+                try:
+                    wh = await waha.update_webhook(
+                        settings.webhook_callback_url, ["message"], restart=False
+                    )
+                    result["webhook_repaired"] = wh
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Webhook self-heal failed: %s", exc)
+                    result["webhook_repaired"] = {"error": str(exc)}
+            else:
+                result["webhook_repaired"] = "ok (déjà présent)"
     except Exception as exc:  # noqa: BLE001
         logger.exception("WAHA watchdog session check failed: %s", exc)
         result["action"] = f"error: {exc}"
@@ -864,25 +883,21 @@ async def diagnose_pipeline(
         await waha.aclose()
 
     # 2. raw_webhooks : WAHA appelle-t-il encore le backend ?
+    # (le client REST custom ne gère pas count=exact → on compte un échantillon)
     try:
         recent = (
             sb.table("raw_webhooks")
-            .select("created_at", count="exact")
+            .select("created_at")
             .gte("created_at", since_24h)
             .order("created_at", desc=True)
-            .limit(1)
+            .limit(500)
             .execute()
         )
-        latest_wh = (
-            sb.table("raw_webhooks")
-            .select("created_at")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
+        sample = recent.data or []
         diag["raw_webhooks"] = {
-            "count_last_24h": recent.count,
-            "latest_received": (latest_wh.data or [{}])[0].get("created_at"),
+            "count_last_24h": len(sample),
+            "count_truncated": len(sample) >= 500,
+            "latest_received": sample[0].get("created_at") if sample else None,
         }
     except Exception as exc:  # noqa: BLE001
         diag["raw_webhooks"] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -927,6 +942,51 @@ async def diagnose_pipeline(
 
     logger.info("diagnose-pipeline: verdict=%s", verdict)
     return diag
+
+
+@router.post("/ensure-webhook")
+async def ensure_webhook(
+    restart: bool = True,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    (Ré)enregistre le webhook WAHA → backend, pour restaurer la livraison
+    temps réel des messages.
+
+    Corrige la cause racine du « les messages ne se mettent plus à jour » :
+    après un redémarrage de session, WAHA perd son webhook (config par-session).
+    Cet endpoint le réinjecte via l'API WAHA.
+
+    `restart=true` (défaut) redémarre la session pour appliquer la config.
+    La session étant authentifiée, AUCUN re-scan QR n'est nécessaire.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    callback = settings.webhook_callback_url
+    waha = WahaClient()
+    out: dict[str, Any] = {"callback_url": callback, "restart": restart}
+    try:
+        before = await waha.get_session_status()
+        out["webhooks_before"] = ((before or {}).get("config") or {}).get("webhooks") or []
+        out["update_result"] = await waha.update_webhook(
+            callback, ["message"], restart=restart
+        )
+        await asyncio.sleep(4)
+        after = await waha.get_session_status()
+        out["status_after"] = (after or {}).get("status")
+        out["webhooks_after"] = ((after or {}).get("config") or {}).get("webhooks") or []
+        out["ok"] = len(out["webhooks_after"]) > 0
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ensure-webhook failed: %s", exc)
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["ok"] = False
+    finally:
+        await waha.aclose()
+
+    logger.info("ensure-webhook: ok=%s after=%s", out.get("ok"), out.get("webhooks_after"))
+    return out
 
 
 @router.post("/import-mkgt-csv")
