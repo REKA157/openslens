@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.db import get_supabase
-from app.services import import_export, import_export_media, ingest
+from app.services import import_export, import_export_media, import_mkgt, ingest
 from app.services.ai import classify as classify_service
 from app.services.groups import get_or_create_pilot_group_id
 from app.waha import WahaClient
@@ -752,6 +752,160 @@ async def import_whatsapp_export_with_media(
     stats["elapsed_seconds"] = round(time.time() - t0, 2)
     stats["filename"] = file.filename
     logger.info("import-export-with-media: %s", stats)
+    return stats
+
+
+@router.get("/diagnose-pipeline")
+async def diagnose_pipeline(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Diagnostic complet du pipeline d'ingestion WhatsApp → OpsLens.
+
+    Répond à : "pourquoi les messages ne se mettent plus à jour ?"
+    en vérifiant chaque maillon de la chaîne :
+      1. Session WAHA : statut + URL(s) webhook configurée(s)
+      2. raw_webhooks : WAHA envoie-t-il encore des events ? (24h glissantes)
+      3. whatsapp_messages : date du dernier message ingéré
+
+    Le maillon cassé saute aux yeux :
+      - webhook absent/mauvaise URL → WAHA connecté mais ne transmet pas
+      - raw_webhooks vide récent → WAHA n'appelle plus le backend
+      - raw_webhooks OK mais messages vieux → souci de filtrage/normalisation
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    sb = get_supabase()
+    now = datetime.now(tz=timezone.utc)
+    since_24h = (now - timedelta(hours=24)).isoformat()
+
+    diag: dict[str, Any] = {"checked_at": now.isoformat()}
+
+    # 1. Session WAHA + config webhook
+    waha = WahaClient()
+    try:
+        info = await waha.get_session_status()
+        config = (info or {}).get("config") or {}
+        webhooks = config.get("webhooks") or []
+        diag["waha"] = {
+            "status": (info or {}).get("status"),
+            "webhooks_configured": [
+                {
+                    "url": w.get("url"),
+                    "events": w.get("events"),
+                }
+                for w in webhooks
+                if isinstance(w, dict)
+            ],
+            "webhook_count": len(webhooks),
+        }
+    except Exception as exc:  # noqa: BLE001
+        diag["waha"] = {"error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        await waha.aclose()
+
+    # 2. raw_webhooks : WAHA appelle-t-il encore le backend ?
+    try:
+        recent = (
+            sb.table("raw_webhooks")
+            .select("created_at", count="exact")
+            .gte("created_at", since_24h)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_wh = (
+            sb.table("raw_webhooks")
+            .select("created_at")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        diag["raw_webhooks"] = {
+            "count_last_24h": recent.count,
+            "latest_received": (latest_wh.data or [{}])[0].get("created_at"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        diag["raw_webhooks"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    # 3. Dernier message ingéré
+    try:
+        latest_msg = (
+            sb.table("whatsapp_messages")
+            .select("sent_at,sender_display_name,message_type")
+            .order("sent_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        msg = (latest_msg.data or [{}])[0]
+        diag["last_message"] = {
+            "sent_at": msg.get("sent_at"),
+            "sender": msg.get("sender_display_name"),
+            "type": msg.get("message_type"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        diag["last_message"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    # 4. Verdict automatique
+    verdict = "unknown"
+    waha_block = diag.get("waha", {})
+    wh_block = diag.get("raw_webhooks", {})
+    if isinstance(waha_block, dict) and waha_block.get("status") != "WORKING":
+        verdict = "Session WAHA non connectée → relancer / re-scanner le QR"
+    elif isinstance(waha_block, dict) and waha_block.get("webhook_count") == 0:
+        verdict = (
+            "Session WORKING mais AUCUN webhook configuré → WAHA ne transmet "
+            "rien. Reconfigurer le webhook (voir /admin/ensure-webhook)."
+        )
+    elif isinstance(wh_block, dict) and (wh_block.get("count_last_24h") or 0) == 0:
+        verdict = (
+            "Webhook configuré mais 0 event reçu en 24h → vérifier que l'URL "
+            "webhook pointe bien vers ce backend, ou groupe réellement calme."
+        )
+    else:
+        verdict = "Pipeline OK — events reçus récemment."
+    diag["verdict"] = verdict
+
+    logger.info("diagnose-pipeline: verdict=%s", verdict)
+    return diag
+
+
+@router.post("/import-mkgt-csv")
+async def import_mkgt_csv(
+    file: UploadFile = File(..., description="Export CSV MKGT (séparateur ; ou ,)"),
+    delimiter: str | None = None,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Importe un export CSV MKGT dans la table mkgt_operations.
+
+    Détecte automatiquement les colonnes (le format MKGT varie selon la
+    configuration de l'entreprise). Idempotent : réimporter le même fichier
+    ne crée pas de doublons (upsert sur hash de ligne + batch_id du fichier).
+
+    Retourne : colonnes détectées, stats lignes, sites non matchés.
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, detail="Le fichier doit être un .csv")
+
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, detail="Fichier trop grand (max 10 Mo)")
+
+    try:
+        stats = await import_mkgt.import_csv(raw, file.filename, delimiter=delimiter)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("import-mkgt-csv failed: %s", exc)
+        raise HTTPException(500, detail=f"Import MKGT échoué : {exc}")
+
     return stats
 
 

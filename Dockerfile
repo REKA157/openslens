@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v41: import zip avec médias (whatsapp export with media → bucket + vision)
+# v42: import CSV MKGT (ERP CKDEV) → mkgt_operations
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
