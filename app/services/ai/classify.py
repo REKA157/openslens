@@ -139,12 +139,69 @@ def build_image_aware_input(caption: str | None, vision: dict | None) -> str | N
     return "\n\n".join(parts)
 
 
+def build_media_aware_input(caption: str | None, analysis: dict | None) -> str | None:
+    """
+    Version généralisée de build_image_aware_input : fusionne la légende du
+    message avec l'analyse d'un média joint (image, document, audio, office),
+    selon analysis['kind']. Permet au classifieur de comprendre un message dont
+    le sens vit dans la pièce jointe.
+    """
+    caption = (caption or "").strip()
+    if not analysis:
+        return caption or None
+
+    kind = analysis.get("kind")
+
+    # Image : on réutilise le format existant.
+    if kind == "image":
+        return build_image_aware_input(caption, analysis)
+
+    parts: list[str] = []
+    if caption:
+        parts.append(f'Texte du message : "{caption}"')
+
+    if kind == "document":
+        lines: list[str] = []
+        if analysis.get("document_type"):
+            lines.append(f"Type : {analysis['document_type']}")
+        if analysis.get("summary"):
+            lines.append(f"Résumé : {analysis['summary']}")
+        for label, key in (
+            ("Référence", "reference"), ("Client", "client_name"),
+            ("Site", "site_name"), ("Matière", "waste_type"),
+            ("Quantité", "quantity"), ("Montant", "amount"),
+        ):
+            if analysis.get(key):
+                lines.append(f"{label} : {analysis[key]}")
+        if analysis.get("possible_anomaly"):
+            lines.append(f"/!\\ Anomalie sur le document : {analysis.get('anomaly_description') or 'oui'}")
+        if analysis.get("full_text"):
+            lines.append(f"Texte du document : {analysis['full_text'][:1500]}")
+        if lines:
+            label = "[DOCUMENT JOINT]" if caption else "[DOCUMENT SANS MESSAGE]"
+            parts.append(label + "\n" + "\n".join(lines))
+
+    elif kind == "audio":
+        transcript = (analysis.get("transcript") or "").strip()
+        if transcript:
+            parts.append(f"[NOTE VOCALE — transcription]\n{transcript}")
+
+    elif kind == "office":
+        text = (analysis.get("extracted_text") or "").strip()
+        if text:
+            parts.append(f"[FICHIER JOINT — contenu]\n{text[:2000]}")
+
+    if not parts:
+        return caption or None
+    return "\n\n".join(parts)
+
+
 async def classify_message(
     message_uuid: str,
     enriched_text: str,
     *,
     skip_if_exists: bool = True,
-    image_context: dict | None = None,
+    media_context: dict | None = None,
 ) -> dict | None:
     """
     Classifie un message via Claude et stocke le résultat dans
@@ -153,9 +210,10 @@ async def classify_message(
     skip_if_exists=True : si une classification existe déjà pour ce message,
     on ne fait rien (utile pour le retraitement en lot, évite double facturation).
 
-    image_context : si le message porte une photo (dict d'analyse vision), on
-    le signale au modèle ET on applique un filet de sécurité — toute anomalie
-    visuelle force la revue humaine et remonte une priorité 'low' à 'medium'.
+    media_context : si le message porte une pièce jointe analysée (photo,
+    document, vocal…), on le signale au modèle ET on applique un filet de
+    sécurité — toute anomalie détectée force la revue humaine et remonte une
+    priorité 'low' à 'medium'.
     """
     if not settings.anthropic_api_key:
         logger.warning("ANTHROPIC_API_KEY non configurée, skip classification")
@@ -196,10 +254,11 @@ async def classify_message(
                 {
                     "role": "user",
                     "content": (
-                        "Message à analyser (il contient une PHOTO ; juge la "
-                        "catégorie et la priorité selon ce que MONTRE la photo, "
-                        f"pas seulement le texte) :\n\n{enriched_text}\n\nProduis le JSON."
-                        if image_context else
+                        "Message à analyser (il contient une PIÈCE JOINTE — photo, "
+                        "document ou vocal ; juge la catégorie et la priorité selon "
+                        "le CONTENU de la pièce jointe, pas seulement le texte) :\n\n"
+                        f"{enriched_text}\n\nProduis le JSON."
+                        if media_context else
                         f"Message à analyser :\n\n{enriched_text}\n\nProduis le JSON."
                     ),
                 }
@@ -230,9 +289,9 @@ async def classify_message(
     priority = result.get("priority")
     requires_review = confidence < 0.7 or priority == "urgent"
 
-    # Filet de sécurité : une anomalie repérée sur la photo ne doit jamais
-    # passer inaperçue, même si le texte semble anodin.
-    if image_context and image_context.get("possible_anomaly"):
+    # Filet de sécurité : une anomalie repérée dans une pièce jointe (photo ou
+    # document) ne doit jamais passer inaperçue, même si le texte semble anodin.
+    if media_context and media_context.get("possible_anomaly"):
         requires_review = True
         if priority in (None, "low"):
             priority = "medium"

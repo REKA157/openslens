@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db import get_supabase
+from app.services.ai import audio as audio_service
+from app.services.ai import document as document_service
 from app.services.ai import vision as vision_service
 from app.waha import WahaClient
 
@@ -40,7 +42,7 @@ async def download_and_store(
     """
     sb = get_supabase()
     waha = WahaClient()
-    vision_result: dict | None = None
+    media_analysis: dict | None = None
 
     try:
         media = payload.get("media") or {}
@@ -89,19 +91,38 @@ async def download_and_store(
 
         logger.info("Media stored: %s (%d bytes)", storage_path, len(content))
 
-        # 5. Si image, lancer l'analyse vision Claude
-        if data_type == "image" and updated.data:
+        # 5. Analyse du contenu selon le type, pour fusion dans la classification.
+        if updated.data:
             media_uuid = updated.data[0]["id"]
+            fname = media.get("filename") or (payload.get("_data") or {}).get("filename")
             try:
-                vision_result = await vision_service.analyze_image(
-                    media_id=media_uuid,
-                    image_bytes=content,
-                    mime_type=content_type,
-                )
+                if data_type == "image":
+                    media_analysis = await vision_service.analyze_image(
+                        media_id=media_uuid,
+                        image_bytes=content,
+                        mime_type=content_type,
+                    )
+                    if media_analysis:
+                        media_analysis["kind"] = "image"
+                elif data_type == "document":
+                    media_analysis = await document_service.analyze_document(
+                        media_id=media_uuid,
+                        file_bytes=content,
+                        mime_type=content_type,
+                        filename=fname,
+                    )
+                elif data_type in {"audio", "ptt", "voice"}:
+                    media_analysis = await audio_service.transcribe_audio(
+                        media_id=media_uuid,
+                        file_bytes=content,
+                        mime_type=content_type,
+                        filename=fname,
+                    )
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Vision analysis failed for %s: %s", media_uuid, exc)
+                logger.exception("Analyse média (%s) échouée pour %s: %s",
+                                 data_type, media_uuid, exc)
 
-        return vision_result
+        return media_analysis
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("download_and_store failed: %s", exc)

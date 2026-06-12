@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v45: fusion vision→classification (messages à photo compris) + filet anomalie
+# v46: lecture documents (PDF/Office via Claude) + transcription vocaux (Whisper)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

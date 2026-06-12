@@ -83,13 +83,14 @@ async def handle_waha_event(payload: dict[str, Any]) -> dict:
 
     message_uuid = inserted.data[0]["id"]
 
-    # 5. Médias + vision (la vision tourne ici et renvoie sa description)
-    vision_result = None
+    # 5. Médias + analyse de contenu (photo→vision, PDF/Office→lecture,
+    # vocal→transcription). Renvoie l'analyse pour fusion dans la classification.
+    media_analysis = None
     if _has_media(data):
         media_row = _build_media_row(message_uuid, data)
         sb.table("whatsapp_media").insert(media_row).execute()
         try:
-            vision_result = await media_service.download_and_store(
+            media_analysis = await media_service.download_and_store(
                 message_uuid=message_uuid,
                 waha_message_id=msg_row["external_message_id"],
                 payload=data,
@@ -98,16 +99,16 @@ async def handle_waha_event(payload: dict[str, Any]) -> dict:
             logger.exception("Media download failed for %s: %s",
                              msg_row["external_message_id"], exc)
 
-    # 6. Classification IA — fusion texte + description de la photo.
-    # Permet de comprendre les messages dont le sens dépend de l'image
-    # (« on fait quoi dans ce cas ? » + photo d'incident) et de classer
-    # aussi les photos sans légende.
+    # 6. Classification IA — fusion du texte + du CONTENU de la pièce jointe.
+    # Permet de comprendre les messages dont le sens dépend de la pièce jointe
+    # (« on fait quoi ? » + photo d'incident, bon de pesée en PDF, vocal du
+    # chauffeur…) et de classer aussi les pièces jointes sans texte.
     caption = (msg_row.get("raw_text") or "").strip()
-    classification_input = classify_service.build_image_aware_input(caption, vision_result)
+    classification_input = classify_service.build_media_aware_input(caption, media_analysis)
     if classification_input:
         try:
             await classify_service.classify_message(
-                message_uuid, classification_input, image_context=vision_result
+                message_uuid, classification_input, media_context=media_analysis
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Classification failed for %s: %s", message_uuid, exc)

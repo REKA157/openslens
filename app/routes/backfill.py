@@ -58,6 +58,12 @@ class ReclassifyImagesVisionRequest(BaseModel):
     max_messages: int = Field(default=2000, ge=1, le=10000)
 
 
+class AnalyzeMissingDocsRequest(BaseModel):
+    """Analyse documents/vocaux stockés mais pas encore lus, puis re-classe."""
+    concurrency: int = Field(default=2, ge=1, le=8)
+    max_items: int = Field(default=100, ge=1, le=2000)
+
+
 @router.post("/backfill")
 async def backfill(
     body: BackfillRequest,
@@ -552,7 +558,7 @@ async def reclassify_images_vision(
         async with sem:
             try:
                 r = await classify_service.classify_message(
-                    mid, fused, skip_if_exists=False, image_context=vision
+                    mid, fused, skip_if_exists=False, media_context=vision
                 )
                 return "ok" if r else "error"
             except Exception as exc:  # noqa: BLE001
@@ -568,6 +574,157 @@ async def reclassify_images_vision(
 
     stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
     logger.info("reclassify-images-vision: %s", stats)
+    return stats
+
+
+@router.post("/analyze-missing-documents")
+async def analyze_missing_documents(
+    body: AnalyzeMissingDocsRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Rattrape les documents (PDF/Office) et notes vocales déjà stockés dans
+    Storage mais jamais analysés : télécharge, lit (Claude pour les docs,
+    Whisper pour l'audio), puis re-classe le message parent en fusionnant le
+    contenu extrait.
+
+    Pré-requis : le média est présent dans Storage (status='stored'). Les
+    médias historiques jamais téléchargés nécessitent l'import du zip
+    « avec médias ».
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    from app.services.ai import audio as audio_service
+    from app.services.ai import document as document_service
+    import httpx
+
+    sb = get_supabase()
+    t0 = time.time()
+
+    # 1. media docs/audio stockés
+    media_rows: list[dict] = []
+    page = 0
+    PAGE = 1000
+    while page < 20 and len(media_rows) < body.max_items * 3:
+        res = (
+            sb.table("whatsapp_media")
+            .select("id,message_id,storage_path,mime_type,media_type,original_filename,status")
+            .in_("media_type", ["document", "audio"])
+            .eq("status", "stored")
+            .order("created_at", desc=True)
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        media_rows.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    # 2. déjà analysés ? (document_analysis + audio_transcription)
+    done_doc: set[str] = set()
+    done_audio: set[str] = set()
+    for table, target in (("document_analysis", done_doc), ("audio_transcription", done_audio)):
+        page = 0
+        while page < 20:
+            res = sb.table(table).select("media_id").limit(PAGE).offset(page * PAGE).execute()
+            rows = res.data or []
+            if not rows:
+                break
+            target.update(r["media_id"] for r in rows)
+            if len(rows) < PAGE:
+                break
+            page += 1
+
+    todo = [
+        m for m in media_rows
+        if m.get("storage_path")
+        and m["id"] not in (done_doc if m["media_type"] == "document" else done_audio)
+    ][: body.max_items]
+
+    stats: dict[str, Any] = {
+        "candidates": len(media_rows),
+        "todo": len(todo),
+        "analyzed": 0,
+        "reclassified": 0,
+        "errors": 0,
+        "sample_errors": [],
+    }
+    if not todo:
+        stats["elapsed_seconds"] = round(time.time() - t0, 2)
+        return stats
+
+    base = settings.supabase_url.rstrip("/")
+    auth = {"apikey": settings.supabase_secret_key, "Authorization": f"Bearer {settings.supabase_secret_key}"}
+
+    async def download(storage_path: str) -> tuple[bytes, str] | None:
+        url = f"{base}/storage/v1/object/Media/{storage_path}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(url, headers=auth)
+            if r.status_code != 200:
+                return None
+            return r.content, r.headers.get("content-type") or "application/octet-stream"
+
+    sem = asyncio.Semaphore(body.concurrency)
+
+    async def worker(media: dict) -> str:
+        async with sem:
+            try:
+                dl = await download(media["storage_path"])
+                if dl is None:
+                    return "error"
+                content, ct = dl
+                mime = media.get("mime_type") or ct
+                fname = media.get("original_filename")
+                if media["media_type"] == "document":
+                    analysis = await document_service.analyze_document(
+                        media_id=media["id"], file_bytes=content, mime_type=mime, filename=fname
+                    )
+                else:
+                    analysis = await audio_service.transcribe_audio(
+                        media_id=media["id"], file_bytes=content, mime_type=mime, filename=fname
+                    )
+                if not analysis:
+                    return "error"
+                # Re-classe le message parent avec le contenu fusionné
+                msg = (
+                    sb.table("whatsapp_messages")
+                    .select("raw_text")
+                    .eq("id", media["message_id"])
+                    .limit(1)
+                    .execute()
+                )
+                caption = (msg.data or [{}])[0].get("raw_text") or ""
+                fused = classify_service.build_media_aware_input(caption, analysis)
+                if fused:
+                    await classify_service.classify_message(
+                        media["message_id"], fused, skip_if_exists=False, media_context=analysis
+                    )
+                    return "reclassified"
+                return "analyzed"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("analyze-missing-documents failed for %s: %s", media["id"], exc)
+                if len(stats["sample_errors"]) < 5:
+                    stats["sample_errors"].append(f"{media['id']}: {type(exc).__name__}")
+                return "error"
+
+    results = await asyncio.gather(*(worker(m) for m in todo))
+    for r in results:
+        if r == "reclassified":
+            stats["analyzed"] += 1
+            stats["reclassified"] += 1
+        elif r == "analyzed":
+            stats["analyzed"] += 1
+        else:
+            stats["errors"] += 1
+
+    stats["elapsed_seconds"] = round(time.time() - t0, 2)
+    logger.info("analyze-missing-documents: %s", stats)
     return stats
 
 

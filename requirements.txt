@@ -12,3 +12,6 @@ openai==1.54.0
 statsmodels==0.14.4
 pandas==2.2.3
 numpy<2.1
+# Extraction de documents Office (pur Python, wheels dispo, pas de compilation)
+openpyxl==3.1.5
+python-docx==1.1.2
