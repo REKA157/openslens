@@ -18,6 +18,7 @@ import anthropic
 
 from app.config import settings
 from app.db import get_supabase
+from app.services.analytics import quantitative
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,44 @@ async def generate_report(
                 site_set.add(s.strip())
     stats["sites_mentioned"] = sorted(site_set)
 
+    # 4b. Données QUANTITATIVES MKGT de la période (tonnage / € réels)
+    quant = None
+    quant_block = ""
+    try:
+        sites_q = (
+            sb.table("sites")
+            .select("id,canonical_name,aliases,region")
+            .eq("company_id", settings.company_id)
+            .eq("is_active", True)
+            .execute()
+        ).data or []
+        mkgt_ops = quantitative.load_mkgt_operations(period_start, period_end)
+        if mkgt_ops:
+            quant = quantitative.aggregate_by_site(mkgt_ops, sites_q)
+            stats["quantitative"] = quant["totals"]
+            stats["quantitative_by_site"] = [
+                {
+                    "site_name": s["site_name"],
+                    "tonnage": s["tonnage"],
+                    "amount_ht": s["amount_ht"],
+                    "operations": s["operations"],
+                }
+                for s in quant["by_site"][:15]
+            ]
+            t = quant["totals"]
+            site_lines = [
+                f"- {s['site_name']} : {s['tonnage']} t, {s['amount_ht']} € HT, {s['operations']} op."
+                for s in quant["by_site"][:15]
+            ]
+            quant_block = (
+                "\n\nDONNÉES QUANTITATIVES MKGT (chiffres réels de la période) :\n"
+                f"Total : {t['tonnage']} tonnes collectées, {t['amount_ht']} € HT, "
+                f"{t['operations']} opérations.\n"
+                "Par site :\n" + "\n".join(site_lines)
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Quantitatif rapport indisponible: %s", exc)
+
     # 5. Contexte pour Claude
     # Pour week/month on date chaque ligne en jour+heure (sinon on perd la
     # notion de "quand" dans le récit).
@@ -287,8 +326,14 @@ async def generate_report(
         f"Répartition priorités : {stats['by_priority']}\n"
         f"Répartition catégories : {stats['by_category']}\n"
         f"Sites mentionnés : {', '.join(stats['sites_mentioned'][:30]) or 'aucun nommément identifié'}\n"
+        f"{quant_block}\n"
         f"\nListe des messages classifiés :\n" + "\n".join(lines)
     )
+    if quant_block:
+        context += (
+            "\n\nNB : intègre les chiffres MKGT (tonnages, € HT) dans le récit et "
+            "site_activity quand ils sont disponibles — ce sont les volumes réels."
+        )
 
     # 6. Appel Claude
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)

@@ -11,6 +11,7 @@ const TABS = [
   { href: "/messages", label: "Journal" },
   { href: "/sites", label: "Sites" },
   { href: "/process", label: "Processus" },
+  { href: "/quantitative", label: "Quantitatif" },
   { href: "/predictions", label: "Aide à la décision" },
   { href: "/forecast", label: "Prévisions" },
 ];
