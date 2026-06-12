@@ -855,7 +855,6 @@ async def diagnose_pipeline(
 
     sb = get_supabase()
     now = datetime.now(tz=timezone.utc)
-    since_24h = (now - timedelta(hours=24)).isoformat()
 
     diag: dict[str, Any] = {"checked_at": now.isoformat()}
 
@@ -883,21 +882,35 @@ async def diagnose_pipeline(
         await waha.aclose()
 
     # 2. raw_webhooks : WAHA appelle-t-il encore le backend ?
-    # (le client REST custom ne gère pas count=exact → on compte un échantillon)
+    # Schéma créé à la main dans Supabase → on ne suppose pas le nom de la
+    # colonne date. On découvre les colonnes, puis on trie sur la 1re colonne
+    # temporelle trouvée (sinon sur id) pour remonter la dernière entrée.
     try:
-        recent = (
-            sb.table("raw_webhooks")
-            .select("created_at")
-            .gte("created_at", since_24h)
-            .order("created_at", desc=True)
-            .limit(500)
-            .execute()
+        probe = sb.table("raw_webhooks").select("*").limit(1).execute()
+        cols = list((probe.data or [{}])[0].keys()) if probe.data else []
+        time_col = next(
+            (c for c in cols if c in (
+                "received_at", "created_at", "inserted_at", "ts", "timestamp"
+            )),
+            None,
         )
-        sample = recent.data or []
+        order_col = time_col or ("id" if "id" in cols else None)
+        latest = None
+        if order_col:
+            latest_res = (
+                sb.table("raw_webhooks")
+                .select("*")
+                .order(order_col, desc=True)
+                .limit(1)
+                .execute()
+            )
+            row = (latest_res.data or [{}])[0]
+            latest = row.get(time_col) if time_col else f"id={row.get('id')}"
         diag["raw_webhooks"] = {
-            "count_last_24h": len(sample),
-            "count_truncated": len(sample) >= 500,
-            "latest_received": sample[0].get("created_at") if sample else None,
+            "columns": cols,
+            "time_column": time_col,
+            "latest_entry": latest,
+            "has_rows": bool(probe.data),
         }
     except Exception as exc:  # noqa: BLE001
         diag["raw_webhooks"] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -923,21 +936,18 @@ async def diagnose_pipeline(
     # 4. Verdict automatique
     verdict = "unknown"
     waha_block = diag.get("waha", {})
-    wh_block = diag.get("raw_webhooks", {})
     if isinstance(waha_block, dict) and waha_block.get("status") != "WORKING":
         verdict = "Session WAHA non connectée → relancer / re-scanner le QR"
     elif isinstance(waha_block, dict) and waha_block.get("webhook_count") == 0:
         verdict = (
             "Session WORKING mais AUCUN webhook configuré → WAHA ne transmet "
-            "rien. Reconfigurer le webhook (voir /admin/ensure-webhook)."
-        )
-    elif isinstance(wh_block, dict) and (wh_block.get("count_last_24h") or 0) == 0:
-        verdict = (
-            "Webhook configuré mais 0 event reçu en 24h → vérifier que l'URL "
-            "webhook pointe bien vers ce backend, ou groupe réellement calme."
+            "rien. Reconfigurer le webhook (POST /admin/ensure-webhook)."
         )
     else:
-        verdict = "Pipeline OK — events reçus récemment."
+        verdict = (
+            "Session WORKING + webhook configuré. La livraison temps réel se "
+            "confirme à l'arrivée du prochain message (cf. last_message)."
+        )
     diag["verdict"] = verdict
 
     logger.info("diagnose-pipeline: verdict=%s", verdict)
