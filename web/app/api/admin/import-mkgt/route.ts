@@ -26,22 +26,21 @@ const insecureDispatcher = new Agent({
 export async function POST(request: NextRequest) {
   const targetUrl = `${BACKEND_URL}/admin/import-mkgt-csv`;
   try {
-    const formData = await request.formData();
-    const headers: Record<string, string> = {};
+    // On transmet les octets bruts du multipart tels quels, en conservant le
+    // content-type d'origine (avec sa "boundary"). Plus simple et plus sûr que
+    // de reconstruire un FormData — et compatible avec les types undici.
+    const rawBody = Buffer.from(await request.arrayBuffer());
+    const headers: Record<string, string> = {
+      "content-type": request.headers.get("content-type") || "application/octet-stream",
+    };
     if (ADMIN_TOKEN) {
       headers["X-Admin-Token"] = ADMIN_TOKEN;
-    }
-
-    // Reconstruit le FormData pour undici
-    const body = new FormData();
-    for (const [key, value] of formData.entries()) {
-      body.append(key, value);
     }
 
     const r = await undiciFetch(targetUrl, {
       method: "POST",
       headers,
-      body,
+      body: rawBody,
       dispatcher: insecureDispatcher,
     });
 
