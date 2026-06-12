@@ -22,6 +22,13 @@ const TREND_LABELS = {
 
 const DAY_NAMES_FR = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
 
+const EXUTOIRE_STATUS: Record<string, { label: string; cls: string }> = {
+  ok: { label: "Conforme", cls: "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-300" },
+  sur_objectif: { label: "Au-dessus max", cls: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300" },
+  sous_objectif: { label: "Sous objectif", cls: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300" },
+  critique: { label: "Critique", cls: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300" },
+};
+
 // ---------- Logique business (heuristiques) ----------
 
 function recentObservedTotal(site: SiteForecastModel): number {
@@ -327,6 +334,47 @@ export default function ForecastPage() {
                 </ul>
               </div>
             )}
+          </section>
+        )}
+
+        {/* Projection contractuelle des exutoires (déchets ultimes) */}
+        {data?.exutoires_projection && data.exutoires_projection.exutoires.length > 0 && (
+          <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Atteinte contractuelle exutoires — projection fin {data.exutoires_projection.year}
+            </h2>
+            <div className="mt-1 text-sm text-zinc-500">
+              Global : projection{" "}
+              <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                {Math.round(data.exutoires_projection.totals.projection_annual).toLocaleString("fr-FR")} t
+              </span>{" "}
+              / {Math.round(data.exutoires_projection.totals.contractual_annual).toLocaleString("fr-FR")} t engagés
+              {" "}
+              <span className={data.exutoires_projection.totals.delta_projection < 0 ? "text-red-600" : "text-emerald-600"}>
+                ({data.exutoires_projection.totals.delta_projection > 0 ? "+" : ""}
+                {Math.round(data.exutoires_projection.totals.delta_projection).toLocaleString("fr-FR")} t)
+              </span>
+            </div>
+            <div className="mt-3 space-y-1.5">
+              {data.exutoires_projection.exutoires.map((e) => {
+                const st = EXUTOIRE_STATUS[e.status] || EXUTOIRE_STATUS.ok;
+                return (
+                  <div key={e.name} className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 py-1.5 text-sm dark:border-zinc-800">
+                    <span className="font-medium text-zinc-800 dark:text-zinc-200">{e.name}</span>
+                    <span className="flex items-center gap-3">
+                      <span className="text-zinc-500">
+                        ≈ {Math.round(e.projection_annual).toLocaleString("fr-FR")} / {Math.round(e.contractual_annual_min).toLocaleString("fr-FR")} t
+                        {e.pct_projection != null && ` (${e.pct_projection}%)`}
+                      </span>
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${st.cls}`}>{st.label}</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-[11px] text-zinc-400">
+              Projection linéaire à rythme constant. Détail mensuel dans l&apos;onglet Exutoires.
+            </p>
           </section>
         )}
 

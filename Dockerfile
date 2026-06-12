@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v48: module Exutoires (apports déchets ultimes, contractuel vs réel + projection)
+# v49: exutoires branchés sur aide à la décision (insights) + prévisions
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

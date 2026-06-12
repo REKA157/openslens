@@ -388,6 +388,15 @@ export type SiteForecastModel = {
   };
 };
 
+export type ExutoireProjection = {
+  name: string;
+  contractual_annual_min: number;
+  projection_annual: number;
+  pct_projection: number | null;
+  delta_projection: number;
+  status: string;
+};
+
 export type ForecastResponse = {
   horizon_days: number;
   ref_date: string;
@@ -396,6 +405,17 @@ export type ForecastResponse = {
   messages_scanned: number;
   sites: SiteForecastModel[];
   warning?: string;
+  exutoires_projection?: {
+    year: number;
+    totals: {
+      contractual_annual: number;
+      cumul_real: number;
+      projection_annual: number;
+      delta_projection: number;
+      pct_annual: number | null;
+    };
+    exutoires: ExutoireProjection[];
+  };
 };
 
 export async function fetchForecast(

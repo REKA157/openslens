@@ -29,8 +29,19 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from app.config import settings
 from app.db import get_supabase
+from app.services.analytics import exutoires as exutoires_service
 from app.services.analytics import insights as insights_service
 from app.services.analytics import predictive
+
+
+def _load_exutoires_tracking(ref_date: date_cls) -> list[dict] | None:
+    """Suivi contractuel des exutoires pour la fenêtre (best-effort)."""
+    try:
+        tracking = exutoires_service.build_tracking(ref_date.year)
+        return tracking.get("exutoires") or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Exutoires indisponibles pour les insights : %s", exc)
+        return None
 
 router = APIRouter(prefix="/api", tags=["predictions"])
 logger = logging.getLogger(__name__)
@@ -211,10 +222,11 @@ async def predictions_insights(
     contextual = insights_service.gather_context_per_site(
         messages, classifications_by_id, sites, ref_date,
     )
+    exutoires_tracking = _load_exutoires_tracking(ref_date)
 
     try:
         ai_insights = await insights_service.generate_insights(
-            signals, sites, contextual,
+            signals, sites, contextual, exutoires=exutoires_tracking,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Diagnostic prédictif échoué : %s", exc)
@@ -258,8 +270,9 @@ async def _run_insights_job(job_id: str, date: str | None) -> None:
         contextual = insights_service.gather_context_per_site(
             messages, classifications_by_id, sites, ref_date,
         )
+        exutoires_tracking = _load_exutoires_tracking(ref_date)
         ai_insights = await insights_service.generate_insights(
-            signals, sites, contextual,
+            signals, sites, contextual, exutoires=exutoires_tracking,
         )
 
         for m in messages:

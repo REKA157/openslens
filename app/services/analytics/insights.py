@@ -74,7 +74,14 @@ Règles strictes :
             = "info" si signal à surveiller, pas d'urgence
 7. category : "surcharge" (volume anormal), "qualite_securite" (pollution/incident), \
 "equipement" (pannes/maintenance), "silence_anormal" (site qui ne parle plus), \
-"opportunite" (croissance qui justifie d'investir)
+"opportunite" (croissance qui justifie d'investir), "engagement_contractuel" \
+(objectif d'apport de déchets ultimes vers un exutoire non tenu, ou exutoire en \
+dépassement du maximum contractuel)
+8. ENGAGEMENTS CONTRACTUELS EXUTOIRES : si un exutoire est projeté SOUS son \
+engagement annuel (statut critique/sous_objectif) ou AU-DESSUS de son maximum \
+(sur_objectif), génère une alerte category="engagement_contractuel" avec des \
+actions concrètes : réorienter des volumes entre exutoires, contacter l'exutoire, \
+sécuriser du gisement. Croise avec l'activité terrain quand c'est pertinent.
 
 Schéma JSON attendu EXACTEMENT :
 {
@@ -197,6 +204,24 @@ def _extract_json_object(raw: str) -> str:
     return s
 
 
+def _format_exutoires_block(exutoires: list[dict[str, Any]] | None) -> str:
+    """Formate le suivi contractuel par exutoire pour le contexte Claude."""
+    if not exutoires:
+        return "(aucune donnée exutoire configurée)"
+    lines: list[str] = []
+    for e in exutoires:
+        proj = e.get("projection_annual")
+        pct = e.get("pct_projection")
+        delta = e.get("delta_projection")
+        lines.append(
+            f"- {e.get('name')} : engagement {e.get('contractual_annual_min')} t, "
+            f"réel cumulé {e.get('cumul_real')} t, projection fin d'année "
+            f"≈ {proj} t ({pct}% de l'engagement, delta {delta:+} t) "
+            f"— statut {e.get('status')}"
+        )
+    return "\n".join(lines)
+
+
 def _format_messages_block(by_site_ctx: dict[str, dict[str, Any]]) -> str:
     out_lines: list[str] = []
     for site_id, ctx in by_site_ctx.items():
@@ -216,10 +241,12 @@ async def generate_insights(
     predictive_data: dict[str, Any],
     sites: list[dict],
     contextual_samples: dict[str, dict[str, Any]],
+    exutoires: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Appelle Claude Sonnet avec les signaux statistiques + les samples
-    qualitatifs. Renvoie le JSON structuré insights (alerts/cross/recos).
+    qualitatifs + le suivi contractuel des exutoires. Renvoie le JSON
+    structuré insights (alerts/cross/recos).
     """
     if not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY non configurée")
@@ -238,6 +265,9 @@ async def generate_insights(
         "",
         "## Pannes récurrentes (3 mois)",
         json.dumps(predictive_data.get("recurring_failures", []), ensure_ascii=False, indent=2),
+        "",
+        "## Engagements contractuels exutoires (apports déchets ultimes, projection fin d'année)",
+        _format_exutoires_block(exutoires),
         "",
         "",
         "ÉCHANTILLON QUALITATIF — messages WhatsApp pros récents par site (14 derniers jours, max 15 par site) :",

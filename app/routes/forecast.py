@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.config import settings
 from app.db import get_supabase
 from app.routes.predictions import _load_corpus, _parse_ref_date
+from app.services.analytics import exutoires as exutoires_service
 from app.services.predictive import prophet_forecaster
 
 router = APIRouter(prefix="/api", tags=["forecast"])
@@ -82,6 +83,31 @@ async def forecast(
 
     results.sort(key=lambda r: r["summary"]["expected_total"], reverse=True)
 
+    # Projection contractuelle par exutoire (apports déchets ultimes) — pour
+    # afficher l'atteinte fin d'année à côté des prévisions de volume.
+    exutoires_projection: dict[str, Any] = {}
+    try:
+        year = datetime.now(tz=timezone.utc).year
+        tracking = exutoires_service.build_tracking(year)
+        if tracking.get("has_data"):
+            exutoires_projection = {
+                "year": year,
+                "totals": tracking.get("totals"),
+                "exutoires": [
+                    {
+                        "name": e["name"],
+                        "contractual_annual_min": e["contractual_annual_min"],
+                        "projection_annual": e["projection_annual"],
+                        "pct_projection": e["pct_projection"],
+                        "delta_projection": e["delta_projection"],
+                        "status": e["status"],
+                    }
+                    for e in tracking.get("exutoires", [])
+                ],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Projection exutoires indisponible pour /forecast : %s", exc)
+
     return {
         "horizon_days": horizon_days,
         "ref_date": datetime.now(tz=timezone.utc).date().isoformat(),
@@ -90,6 +116,7 @@ async def forecast(
         "messages_scanned": len(messages),
         "sites": results,
         "errors": errors,
+        "exutoires_projection": exutoires_projection,
     }
 
 
