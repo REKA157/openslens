@@ -12,6 +12,7 @@ const TABS = [
   { href: "/sites", label: "Sites" },
   { href: "/process", label: "Processus" },
   { href: "/quantitative", label: "Quantitatif" },
+  { href: "/exutoires", label: "Exutoires" },
   { href: "/predictions", label: "Aide à la décision" },
   { href: "/forecast", label: "Prévisions" },
 ];

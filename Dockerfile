@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v47: couche quantitative (tonnages/€ MKGT) + prévision tonnage + réconciliation
+# v48: module Exutoires (apports déchets ultimes, contractuel vs réel + projection)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
