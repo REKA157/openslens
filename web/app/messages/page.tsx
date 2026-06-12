@@ -44,10 +44,34 @@ type ImageAnalysis = {
   confidence: number | null;
 };
 
+type DocumentAnalysis = {
+  media_id: string;
+  document_type: string | null;
+  summary: string | null;
+  reference: string | null;
+  client_name: string | null;
+  site_name: string | null;
+  waste_type: string | null;
+  quantity: string | null;
+  amount: string | null;
+  full_text: string | null;
+  possible_anomaly: boolean | null;
+  anomaly_description: string | null;
+  confidence: number | null;
+};
+
+type AudioTranscription = {
+  media_id: string;
+  transcript: string | null;
+  language: string | null;
+};
+
 type EnrichedRow = Message & {
   classification: Classification | null;
   media: Media | null;
   vision: ImageAnalysis | null;
+  document: DocumentAnalysis | null;
+  audio: AudioTranscription | null;
 };
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -110,17 +134,33 @@ export default function MessagesPage() {
       .select("id,message_id,media_type,storage_path,mime_type")
       .in("message_id", ids);
 
-    // 4. Analyses vision pour ces médias
+    // 4. Analyses de contenu pour ces médias (photo / document / vocal)
     const mediaIds = (medias || []).map((m) => m.id);
     let visions: ImageAnalysis[] = [];
+    let documents: DocumentAnalysis[] = [];
+    let audios: AudioTranscription[] = [];
     if (mediaIds.length > 0) {
-      const { data: visionsData } = await supabase
-        .from("image_analysis")
-        .select(
-          "media_id,visual_description,ocr_text,detected_objects,image_type,possible_anomaly,anomaly_description,confidence"
-        )
-        .in("media_id", mediaIds);
-      visions = (visionsData || []) as ImageAnalysis[];
+      const [visionsRes, docsRes, audiosRes] = await Promise.all([
+        supabase
+          .from("image_analysis")
+          .select(
+            "media_id,visual_description,ocr_text,detected_objects,image_type,possible_anomaly,anomaly_description,confidence"
+          )
+          .in("media_id", mediaIds),
+        supabase
+          .from("document_analysis")
+          .select(
+            "media_id,document_type,summary,reference,client_name,site_name,waste_type,quantity,amount,full_text,possible_anomaly,anomaly_description,confidence"
+          )
+          .in("media_id", mediaIds),
+        supabase
+          .from("audio_transcription")
+          .select("media_id,transcript,language")
+          .in("media_id", mediaIds),
+      ]);
+      visions = (visionsRes.data || []) as ImageAnalysis[];
+      documents = (docsRes.data || []) as DocumentAnalysis[];
+      audios = (audiosRes.data || []) as AudioTranscription[];
     }
 
     // 5. Merge
@@ -133,6 +173,12 @@ export default function MessagesPage() {
     const vMap = new Map<string, ImageAnalysis>();
     visions.forEach((v) => vMap.set(v.media_id, v));
 
+    const dMap = new Map<string, DocumentAnalysis>();
+    documents.forEach((d) => dMap.set(d.media_id, d));
+
+    const aMap = new Map<string, AudioTranscription>();
+    audios.forEach((a) => aMap.set(a.media_id, a));
+
     const enriched: EnrichedRow[] = (messages as Message[]).map((m) => {
       const media = mMap.get(m.id) ?? null;
       return {
@@ -140,6 +186,8 @@ export default function MessagesPage() {
         classification: cMap.get(m.id) ?? null,
         media,
         vision: media ? (vMap.get(media.id) ?? null) : null,
+        document: media ? (dMap.get(media.id) ?? null) : null,
+        audio: media ? (aMap.get(media.id) ?? null) : null,
       };
     });
 
@@ -239,6 +287,8 @@ function MessageCard({ row }: { row: EnrichedRow }) {
   const c = row.classification;
   const media = row.media;
   const vision = row.vision;
+  const doc = row.document;
+  const audio = row.audio;
   const priorityClass = c?.priority
     ? PRIORITY_COLORS[c.priority] ?? PRIORITY_COLORS.low
     : "";
@@ -380,6 +430,64 @@ function MessageCard({ row }: { row: EnrichedRow }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Analyse de document (PDF / Excel / Word) */}
+      {doc && (
+        <div
+          className={`mt-3 rounded-md border p-3 text-xs ${
+            doc.possible_anomaly
+              ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20"
+              : "border-zinc-100 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              📄 Document lu
+            </span>
+            {doc.document_type && (
+              <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                {doc.document_type}
+              </span>
+            )}
+            {doc.possible_anomaly && (
+              <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                ⚠ ANOMALIE
+              </span>
+            )}
+            {doc.confidence !== null && doc.confidence !== undefined && (
+              <span className="text-[10px] text-zinc-500">
+                conf {Math.round((doc.confidence || 0) * 100)}%
+              </span>
+            )}
+          </div>
+          {doc.summary && (
+            <p className="mt-1.5 text-zinc-800 dark:text-zinc-200">{doc.summary}</p>
+          )}
+          {doc.anomaly_description && (
+            <p className="mt-1 text-red-700 dark:text-red-400">⚠ {doc.anomaly_description}</p>
+          )}
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+            {doc.reference && <span>Réf : <strong>{doc.reference}</strong></span>}
+            {doc.client_name && <span>Client : <strong>{doc.client_name}</strong></span>}
+            {doc.site_name && <span>Site : <strong>{doc.site_name}</strong></span>}
+            {doc.waste_type && <span>Matière : <strong>{doc.waste_type}</strong></span>}
+            {doc.quantity && <span>Qté : <strong>{doc.quantity}</strong></span>}
+            {doc.amount && <span>Montant : <strong>{doc.amount}</strong></span>}
+          </div>
+        </div>
+      )}
+
+      {/* Transcription de note vocale */}
+      {audio && audio.transcript && (
+        <div className="mt-3 rounded-md border border-zinc-100 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950">
+          <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+            🎙 Note vocale — transcription
+          </span>
+          <p className="mt-1.5 whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
+            {audio.transcript}
+          </p>
         </div>
       )}
     </li>
