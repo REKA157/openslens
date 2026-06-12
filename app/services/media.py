@@ -31,9 +31,16 @@ async def download_and_store(
     message_uuid: str,
     waha_message_id: str,
     payload: dict[str, Any],
-) -> None:
+) -> dict | None:
+    """
+    Télécharge le média, l'upload dans Storage, et si c'est une image lance
+    la vision Claude. Retourne le dict d'analyse vision (pour que l'appelant
+    puisse fusionner la description de la photo dans la classification), ou
+    None si pas d'image / vision indisponible.
+    """
     sb = get_supabase()
     waha = WahaClient()
+    vision_result: dict | None = None
 
     try:
         media = payload.get("media") or {}
@@ -86,13 +93,15 @@ async def download_and_store(
         if data_type == "image" and updated.data:
             media_uuid = updated.data[0]["id"]
             try:
-                await vision_service.analyze_image(
+                vision_result = await vision_service.analyze_image(
                     media_id=media_uuid,
                     image_bytes=content,
                     mime_type=content_type,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Vision analysis failed for %s: %s", media_uuid, exc)
+
+        return vision_result
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("download_and_store failed: %s", exc)

@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v44: restauration webhook (ensure-webhook + self-heal watchdog) + fix diagnostic
+# v45: fusion vision→classification (messages à photo compris) + filet anomalie
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -52,6 +52,12 @@ class AnalyzeMissingImagesRequest(BaseModel):
     max_images: int = Field(default=100, ge=1, le=2500)
 
 
+class ReclassifyImagesVisionRequest(BaseModel):
+    """Re-classe les messages image en fusionnant la description vision."""
+    concurrency: int = Field(default=4, ge=1, le=15)
+    max_messages: int = Field(default=2000, ge=1, le=10000)
+
+
 @router.post("/backfill")
 async def backfill(
     body: BackfillRequest,
@@ -437,6 +443,131 @@ async def reclassify_missing(
     stats["error_message_ids"] = errors
     stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
     logger.info("reclassify-missing terminé: %s", {**stats, "error_message_ids": f"{len(errors)} samples"})
+    return stats
+
+
+@router.post("/reclassify-images-vision")
+async def reclassify_images_vision(
+    body: ReclassifyImagesVisionRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """
+    Re-classe les messages IMAGE déjà en base en fusionnant la description de
+    la photo (vision) avec la légende.
+
+    Corrige rétroactivement les messages jugés sur le texte seul — typiquement
+    « On fait quoi dans ce cas ??? » + photo d'incident, classé à tort
+    non_exploitable. Pré-requis : la photo a déjà une analyse vision
+    (sinon lancer /admin/analyze-missing-images d'abord).
+    """
+    if settings.waha_webhook_secret:
+        if x_admin_token != settings.waha_webhook_secret:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+
+    sb = get_supabase()
+    t0 = time.monotonic()
+    PAGE = 1000
+
+    # 1. Messages de type image
+    image_msgs: list[dict] = []
+    page = 0
+    while page * PAGE < body.max_messages:
+        res = (
+            sb.table("whatsapp_messages")
+            .select("id,raw_text")
+            .eq("message_type", "image")
+            .order("sent_at", desc=True)
+            .limit(PAGE)
+            .offset(page * PAGE)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            break
+        image_msgs.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+
+    stats: dict[str, Any] = {
+        "image_messages": len(image_msgs),
+        "with_vision": 0,
+        "reclassified": 0,
+        "errors": 0,
+    }
+    if not image_msgs:
+        stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+        return stats
+
+    msg_ids = [m["id"] for m in image_msgs]
+
+    # 2. Médias de ces messages (chunké pour ne pas exploser l'URL)
+    media_by_msg: dict[str, str] = {}
+    media_ids: list[str] = []
+    for i in range(0, len(msg_ids), 100):
+        chunk = msg_ids[i : i + 100]
+        res = (
+            sb.table("whatsapp_media")
+            .select("id,message_id")
+            .in_("message_id", chunk)
+            .execute()
+        )
+        for mr in res.data or []:
+            media_by_msg.setdefault(mr["message_id"], mr["id"])
+            media_ids.append(mr["id"])
+
+    # 3. Analyses vision de ces médias
+    vision_by_media: dict[str, dict] = {}
+    for i in range(0, len(media_ids), 100):
+        chunk = media_ids[i : i + 100]
+        res = (
+            sb.table("image_analysis")
+            .select("media_id,visual_description,ocr_text,detected_objects,possible_anomaly,anomaly_description,confidence")
+            .in_("media_id", chunk)
+            .execute()
+        )
+        for v in res.data or []:
+            vision_by_media[v["media_id"]] = v
+
+    # 4. Reconstruit le texte fusionné et re-classe ceux qui ont une vision
+    todo: list[tuple[str, str, dict]] = []
+    for m in image_msgs:
+        media_id = media_by_msg.get(m["id"])
+        vision = vision_by_media.get(media_id) if media_id else None
+        if not vision:
+            continue
+        fused = classify_service.build_image_aware_input(m.get("raw_text"), vision)
+        if fused:
+            todo.append((m["id"], fused, vision))
+
+    stats["with_vision"] = len(todo)
+    if not todo:
+        stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+        return stats
+
+    sem = asyncio.Semaphore(body.concurrency)
+
+    async def worker(item: tuple[str, str, dict]) -> str:
+        mid, fused, vision = item
+        async with sem:
+            try:
+                r = await classify_service.classify_message(
+                    mid, fused, skip_if_exists=False, image_context=vision
+                )
+                return "ok" if r else "error"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("reclassify-images-vision failed for %s: %s", mid, exc)
+                return "error"
+
+    results = await asyncio.gather(*(worker(t) for t in todo))
+    for r in results:
+        if r == "ok":
+            stats["reclassified"] += 1
+        else:
+            stats["errors"] += 1
+
+    stats["elapsed_seconds"] = round(time.monotonic() - t0, 2)
+    logger.info("reclassify-images-vision: %s", stats)
     return stats
 
 
