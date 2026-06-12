@@ -177,25 +177,79 @@ async def reclassify(
     return stats
 
 
+async def _safety_backfill(limit: int) -> dict:
+    """
+    Filet de sécurité : récupère les N derniers messages du groupe pilote
+    directement via l'API WAHA et les ré-ingère (upsert idempotent).
+
+    Indispensable car le webhook WAHA peut se perdre après un redémarrage de
+    session (config par-session non persistée). Ce backfill garantit que les
+    messages finissent en base même si le webhook est muet — au pire avec le
+    délai du cron watchdog (10 min).
+
+    Quasi gratuit : l'upsert est idempotent et la classification IA est
+    skip_if_exists=True, donc seuls les messages réellement nouveaux coûtent
+    un appel Claude.
+    """
+    waha = WahaClient()
+    stats = {"received": 0, "stored": 0, "ignored": 0, "errors": 0}
+    try:
+        raw_messages = await waha.fetch_messages(
+            chat_id=settings.pilot_group_id,
+            limit=limit,
+            download_media=False,
+        )
+    finally:
+        await waha.aclose()
+
+    stats["received"] = len(raw_messages)
+    for raw in raw_messages:
+        synthetic_event = {
+            "event": "message",
+            "session": settings.waha_session_name,
+            "payload": raw,
+        }
+        try:
+            result = await ingest.handle_waha_event(synthetic_event)
+            status = result.get("status")
+            if status == "stored":
+                stats["stored"] += 1
+            elif status == "ignored":
+                stats["ignored"] += 1
+            else:
+                stats["errors"] += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Safety backfill item failed: %s", exc)
+            stats["errors"] += 1
+    return stats
+
+
 @router.post("/waha-watchdog")
 async def waha_watchdog(
+    backfill_limit: int = 40,
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     """
-    Vérifie le statut de la session WAHA. Si elle n'est pas WORKING,
-    tente de la relancer via POST /api/sessions/{session}/start.
-    À planifier en cron toutes les 10 min.
+    Watchdog auto-réparateur de l'ingestion WhatsApp. À planifier en cron
+    toutes les 10 min. Deux missions :
+
+    1. Vérifie la session WAHA ; la relance si elle n'est pas WORKING.
+    2. Filet de sécurité : ré-ingère les derniers messages via l'API WAHA
+       (backfill_limit), pour rattraper tout ce que le webhook aurait manqué.
+
+    `backfill_limit=0` désactive le filet de sécurité (juste le check session).
     """
     if settings.waha_webhook_secret:
         if x_admin_token != settings.waha_webhook_secret:
             raise HTTPException(status_code=401, detail="invalid admin token")
 
     waha = WahaClient()
-    result: dict[str, str | bool] = {
+    result: dict[str, Any] = {
         "before_status": "unknown",
         "action": "none",
         "after_status": "unknown",
         "ok": False,
+        "safety_backfill": None,
     }
 
     try:
@@ -207,36 +261,39 @@ async def waha_watchdog(
             result["action"] = "none (already WORKING)"
             result["after_status"] = status
             result["ok"] = True
-            logger.info("WAHA watchdog: session WORKING, rien à faire")
-            return result
-
-        # Tentative de relance
-        logger.warning("WAHA watchdog: session %s, tentative de redémarrage", status)
-        # POST /api/sessions/{session}/start sans body
-        start_r = await waha._client.post(  # noqa: SLF001
-            f"/api/sessions/{waha.session_name}/start"
-        )
-        result["action"] = f"POST start (HTTP {start_r.status_code})"
-
-        # On lit le nouveau statut après ~5s
-        import asyncio
-        await asyncio.sleep(5)
-        info2 = await waha.get_session_status()
-        after = (info2 or {}).get("status") or "unknown"
-        result["after_status"] = after
-        result["ok"] = after in ("WORKING", "STARTING", "SCAN_QR_CODE")
-
-        logger.info(
-            "WAHA watchdog terminé: before=%s after=%s ok=%s",
-            status, after, result["ok"],
-        )
-        return result
+        else:
+            # Tentative de relance
+            logger.warning("WAHA watchdog: session %s, tentative de redémarrage", status)
+            start_r = await waha._client.post(  # noqa: SLF001
+                f"/api/sessions/{waha.session_name}/start"
+            )
+            result["action"] = f"POST start (HTTP {start_r.status_code})"
+            await asyncio.sleep(5)
+            info2 = await waha.get_session_status()
+            after = (info2 or {}).get("status") or "unknown"
+            result["after_status"] = after
+            result["ok"] = after in ("WORKING", "STARTING", "SCAN_QR_CODE")
+            status = after
     except Exception as exc:  # noqa: BLE001
-        logger.exception("WAHA watchdog failed: %s", exc)
+        logger.exception("WAHA watchdog session check failed: %s", exc)
         result["action"] = f"error: {exc}"
-        return result
     finally:
         await waha.aclose()
+
+    # Filet de sécurité : backfill même si la session est WORKING (c'est
+    # justement le cas où le webhook peut être muet sans qu'on le voie).
+    if backfill_limit > 0 and result.get("after_status") == "WORKING":
+        try:
+            result["safety_backfill"] = await _safety_backfill(backfill_limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Safety backfill failed: %s", exc)
+            result["safety_backfill"] = {"error": str(exc)}
+
+    logger.info(
+        "WAHA watchdog terminé: status=%s ok=%s backfill=%s",
+        result.get("after_status"), result.get("ok"), result.get("safety_backfill"),
+    )
+    return result
 
 
 @router.post("/reclassify-missing")

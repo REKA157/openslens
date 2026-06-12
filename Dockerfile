@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Build marker — bump to invalidate Coolify cache
-# v42: import CSV MKGT (ERP CKDEV) → mkgt_operations
+# v43: watchdog auto-réparateur (safety backfill) + diagnostic pipeline + MKGT
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
